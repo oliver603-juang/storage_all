@@ -161,6 +161,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .batch-status-icon{font-size:18px;flex-shrink:0;width:22px;text-align:center}
 .keywords{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
 .keyword-tag{background:var(--surface);border:1px solid var(--border);color:var(--muted);font-size:11px;padding:3px 8px;border-radius:4px;font-family:var(--mono)}
+.item-checkbox{display:none;margin-right:12px;width:18px;height:18px;accent-color:var(--accent);pointer-events:none;flex-shrink:0}
+.select-mode .item-checkbox{display:block}
+.batch-action-bar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;transform:translateY(100%);transition:transform .3s;z-index:20}
+.batch-action-bar.show{transform:translateY(0)}
 
 
 </style>
@@ -300,10 +304,15 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <!-- ═══════════════════ INVENTORY SCREEN ═══════════════════ -->
 <div id="s-inventory" class="screen">
 <div class="header">
-  <button class="back-btn" onclick="showScreen('s-main')">← 返回</button>
+  <button class="back-btn" onclick="closeInventory()">← 返回</button>
   <span class="header-title">全部物品</span>
+  <button class="back-btn" id="btn-toggle-select" onclick="toggleSelectMode()">選取</button>
 </div>
-<div id="inventory-content" class="padded"></div>
+<div id="inventory-content" class="padded" style="padding-bottom:80px"></div>
+<div id="batch-action-bar" class="batch-action-bar">
+  <span id="selected-count" style="font-size:14px;color:var(--text);font-weight:700">已選取 0 件</span>
+  <button class="btn-danger" style="margin:0;padding:8px 20px" onclick="confirmBatchDelete()">刪除</button>
+</div>
 </div>
 
 <!-- ═══════════════════ ITEM DETAIL MODAL ═══════════════════ -->
@@ -1464,7 +1473,8 @@ function itemRowHTML(item) {
     ? `<img class="item-thumb" src="${item.imageData}" loading="lazy">`
     : `<div class="item-thumb-placeholder">◻</div>`;
   const qtyBadge = (item.quantity||1) > 1 ? `<span style="font-size:10px;color:var(--accent);font-family:var(--mono)">x${item.quantity}</span>` : '';
-  return `<div class="item-row" onclick="openItemDetail('${item.id}')">
+  return `<div class="item-row" id="row-${item.id}" onclick="handleItemClick('${item.id}')">
+    <input type="checkbox" class="item-checkbox" id="chk-${item.id}">
     ${thumb}
     <div class="item-info">
       <div class="item-name">${item.name} ${qtyBadge}</div>
@@ -1742,6 +1752,31 @@ function doRemoveLocation(id) {
   showToast('已刪除：' + loc.name);
   openLocations();
 }
+
+// BATCH DELETE
+let isSelectMode = false;
+let selectedItemIds = new Set();
+function toggleSelectMode() {
+  isSelectMode = !isSelectMode; selectedItemIds.clear();
+  const inv = document.getElementById('inventory-content');
+  const btn = document.getElementById('btn-toggle-select');
+  const bar = document.getElementById('batch-action-bar');
+  if (isSelectMode) { inv.classList.add('select-mode'); btn.textContent = '取消'; bar.classList.add('show'); updateBatchActionBar(); document.querySelectorAll('.item-checkbox').forEach(c => c.checked = false); }
+  else { inv.classList.remove('select-mode'); btn.textContent = '選取'; bar.classList.remove('show'); }
+}
+function handleItemClick(id) {
+  if (isSelectMode) { const c = document.getElementById('chk-'+id); if (selectedItemIds.has(id)) { selectedItemIds.delete(id); if(c) c.checked=false; } else { selectedItemIds.add(id); if(c) c.checked=true; } updateBatchActionBar(); }
+  else { openItemDetail(id); }
+}
+function updateBatchActionBar() { document.getElementById('selected-count').textContent = '已選取 ' + selectedItemIds.size + ' 件'; }
+async function confirmBatchDelete() {
+  if (selectedItemIds.size === 0) return;
+  if (!confirm('確定要刪除選取的 ' + selectedItemIds.size + ' 件物品嗎？')) return;
+  showScreen('s-processing'); setProcessingMsg('批次刪除中...');
+  try { for (const id of selectedItemIds) { await deleteItem(id); } showToast('已成功刪除 ' + selectedItemIds.size + ' 件物品'); } catch(e) { showToast('刪除過程發生錯誤','error'); }
+  toggleSelectMode(); refreshMain(); openInventory();
+}
+function closeInventory() { if (isSelectMode) toggleSelectMode(); showScreen('s-main'); }
 
 // START
 // ══════════════════════════════════════════════
