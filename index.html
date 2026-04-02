@@ -158,16 +158,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .select-mode .item-row:has(.item-checkbox:checked) { border-color:var(--accent); background:var(--accent-dim); }
 .batch-action-bar { position:fixed; bottom:0; left:0; right:0; background:var(--surface); border-top:1px solid var(--border); padding:14px 20px; display:flex; justify-content:space-between; align-items:center; transform:translateY(100%); transition:transform .3s; z-index:20; }
 .batch-action-bar.show { transform:translateY(0); }
-.sync-bar{padding:4px 20px 12px;font-size:12px}
-.sync-bar-inner{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 14px}
-.sync-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.sync-dot.online{background:var(--green)}
-.sync-dot.offline{background:var(--red)}
-.sync-dot.local{background:var(--accent)}
-.sync-info{flex:1;color:var(--muted);font-family:var(--mono);font-size:11px}
-.sync-btn{background:var(--accent-bg);border:1px solid var(--accent);color:var(--accent);padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--sans);white-space:nowrap}
-.sync-btn:hover{background:var(--accent);color:#0d0d0d}
-.sync-btn:disabled{opacity:.4;cursor:not-allowed}
 .select-all-btn { display:none; margin-left:10px; background:var(--surface); border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:6px; font-size:11px; cursor:pointer; font-family:var(--sans); }
 .select-all-btn:hover { border-color:var(--accent); color:var(--accent); }
 .select-mode .select-all-btn { display:inline-block; }
@@ -247,7 +237,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button onclick="openInventory()" class="btn-sm">☰ 全部物品</button>
   </div>
   <div class="stats-row" id="stats-row"></div>
-  <div id="sync-status" class="sync-bar"></div>
   <div class="section-header">— 近期建檔</div>
   <div id="recent-list" class="item-list"></div>
 </div>
@@ -711,7 +700,9 @@ async function handleProductNameInput() {
 
 async function buildItemFromProductName(productName, hints={}, imageDataUrl=null) {
   const locList = getLocationPromptList(), hasImage = !!imageDataUrl;
-  const prompt = `請根據你對「${productName}」這個商品的知識，提供詳細的商品資訊。\n${hasImage ? '附圖是該物品的實際照片，請從圖片判斷顏色/款式。' : ''}\n家中有以下收納位置：\n${locList}\n回應純 JSON（不含其他文字）：\n{"name": "完整商品名稱","name_en": "English name","brand": "品牌","description": "主要規格與特色，50字內","keywords": ["8~12個搜尋關鍵字"],"feature_tags": ["書寫,筆類,3C...等"],"suggested_location": "建議的收納位置名稱","estimate_volume_ml": 100}`;
+  const existingList = await buildExistingItemsList();
+  const prompt = `請根據你對「${productName}」這個商品的知識，提供詳細的商品資訊。\n${hasImage ? '附圖是該物品的實際照片，請從圖片判斷顏色/款式。' : ''}\n家中有以下收納位置：\n${locList}\n${existingList}\n回應純 JSON（不含其他文字）：\n{"name": "完整商品名稱","name_en": "English name","brand": "品牌","description": "主要規格與特色，50字內","keywords": ["8~12個搜尋關鍵字"],"feature_tags": ["書寫,筆類,3C...等"],"suggested_location": "建議的收納位置名稱","estimate_volume_ml": 100,
+"matched_existing_id": "如果新物品與已建檔清單中某物品是同一件實體商品（品牌型號相同、只是名稱寫法或顏色描述不同），填入該物品的 id（如 item_xxx）。完全不同的物品填 null"}`;
   const base64 = hasImage ? imageDataUrl.split(',')[1] : null;
   const textResp = await callGeminiAPI(prompt, base64);
   return safeParseJSON(textResp);
@@ -740,23 +731,51 @@ function safeParseJSON(text) {
     name: extract('name') || extract('product_name') || '未知商品', name_en: extract('name_en'), brand: extract('brand'), description: extract('description') || extract('summary_text'),
     keywords: extractArr('keywords'), feature_tags: extractArr('feature_tags'), key_features: extractArr('key_features'), suggested_location: extract('suggested_location') || '',
     estimate_volume_ml: parseInt(extract('estimate_volume_ml')) || 100, confidence: extract('confidence') || 'medium',
+    matched_existing_id: extract('matched_existing_id') || null,
   };
 }
 
-function buildPrompt() {
+async function buildExistingItemsList() {
+  const items = await loadItems();
+  if (!items.length) return '';
+  const grouped = {};
+  items.forEach(i => {
+    const loc = i.locationName || '未分類';
+    if (!grouped[loc]) grouped[loc] = [];
+    if (grouped[loc].length < 20) {
+      grouped[loc].push('[' + i.id + '] ' + i.name + '（' + (i.featureTags||[]).join(',') + '）');
+    }
+  });
+  let list = '\n已建檔物品清單（重複偵測用）：\n';
+  for (const [loc, arr] of Object.entries(grouped)) {
+    list += loc + '：\n';
+    arr.forEach(x => list += '- ' + x + '\n');
+  }
+  return list;
+}
+
+function buildPrompt(existingList) {
   const locList = getLocationPromptList();
-  return `你是智慧收納系統的物品辨識模組。請辨識圖片中的物品。\n家中有以下收納位置：\n${locList}\n請根據物品特性，建議最適合的收納位置，並估算物品的收納體積。回應純 JSON 格式（不要有任何其他文字）：\n{"name": "完整商品中文名稱","name_en": "English product name","brand": "品牌名稱","description": "30字內描述","keywords": ["關鍵字1"],"feature_tags": ["書寫"],"suggested_location": "位置名稱","estimate_volume_ml": 100}`;
+  return `你是智慧收納系統的物品辨識模組。請辨識圖片中的物品。\n家中有以下收納位置：\n${locList}\n${existingList || ""}\n請根據物品特性，建議最適合的收納位置，並估算物品的收納體積。回應純 JSON 格式（不要有任何其他文字）：\n{"name": "完整商品中文名稱","name_en": "English product name","brand": "品牌名稱","description": "30字內描述","keywords": ["關鍵字1"],"feature_tags": ["書寫"],"suggested_location": "位置名稱","estimate_volume_ml": 100,
+"matched_existing_id": "如果新物品與已建檔清單中某物品是同一件實體商品（品牌型號相同、只是名稱寫法或顏色描述不同），填入該物品的 id（如 item_xxx）。完全不同的物品填 null"}`;
 }
 
 async function identifyWithGemini(imageData) {
   const base64 = imageData.split(',')[1];
-  const textResp = await callGeminiAPI(buildPrompt(), base64);
+  const existingList = await buildExistingItemsList();
+  const textResp = await callGeminiAPI(buildPrompt(existingList), base64);
   return safeParseJSON(textResp);
 }
 
 async function processIdentifiedItem(item) {
   setProcessingMsg('指派收納位置...');
-  const allItems = await loadItems(), match = findDuplicate(item.name, item.keywords, allItems);
+  const allItems = await loadItems();
+  // AI 語意重複偵測：優先使用 AI 回傳的 matched_existing_id
+  let match = null;
+  if (item.matched_existing_id && item.matched_existing_id !== 'null') {
+    match = allItems.find(i => i.id === item.matched_existing_id);
+  }
+  if (!match) match = findDuplicate(item.name, item.keywords, allItems); // fallback
   const loc = LOCATIONS.find(l => l.name === (item.suggested_location || '')) || LOCATIONS[0];
   const volMl = parseInt(item.estimate_volume_ml) || 100, featureTags = item.feature_tags || [], qty = 1, bagInfo = assignBag(loc.id, featureTags, volMl * qty, allItems);
 
@@ -871,7 +890,6 @@ async function deleteItem(id) {
 // MAIN SCREEN REFRESH & SEARCH
 // ══════════════════════════════════════════════
 async function refreshMain() {
-  renderSyncStatus();
   const items = await loadItems();
   const locs = [...new Set(items.map(i=>i.locationName).filter(Boolean))], bagCount = [...new Set(items.map(i=>(i.locationId||'')+'_'+(i.bagNum||1)))].length;
   document.getElementById('stats-row').innerHTML = `<div class="stat-card"><div class="stat-num">${items.length}</div><div class="stat-label">物品總數</div></div><div class="stat-card"><div class="stat-num">${bagCount}</div><div class="stat-label">收納袋</div></div><div class="stat-card"><div class="stat-num">${locs.length}</div><div class="stat-label">收納位置</div></div>`;
@@ -1038,84 +1056,6 @@ async function confirmBatchDelete() {
   toggleSelectMode(); refreshMain(); openInventory();
 }
 function closeInventory() { if (isSelectMode) toggleSelectMode(); showScreen('s-main'); }
-
-// ══════════════════════════════════════════════
-// FIREBASE SYNC STATUS & FORCE SYNC
-// ══════════════════════════════════════════════
-function renderSyncStatus() {
-  const el = document.getElementById('sync-status');
-  if (!el) return;
-  const hasFirebase = !!(db && !cfg.localOnly);
-  const localItems = JSON.parse(localStorage.getItem(ITEMS_KEY) || '[]');
-
-  if (!cfg.fbProject && !cfg.fbApiKey) {
-    // No Firebase configured at all
-    el.innerHTML = `<div class="sync-bar-inner">
-      <div class="sync-dot local"></div>
-      <div class="sync-info">僅本機儲存 · ${localItems.length} 件</div>
-      <button class="sync-btn" onclick="showScreen('s-setup')">設定 Firebase</button>
-    </div>`;
-    return;
-  }
-
-  if (hasFirebase) {
-    el.innerHTML = `<div class="sync-bar-inner">
-      <div class="sync-dot online"></div>
-      <div class="sync-info">Firebase 已連線 · 本機 ${localItems.length} 件</div>
-      ${localItems.length > 0 ? '<button class="sync-btn" onclick="forceSync()">上傳並清除本地</button>' : '<span style="color:var(--green);font-size:11px">✓ 已同步</span>'}
-    </div>`;
-  } else {
-    el.innerHTML = `<div class="sync-bar-inner">
-      <div class="sync-dot offline"></div>
-      <div class="sync-info">Firebase 連線失敗 · 本機 ${localItems.length} 件</div>
-      <button class="sync-btn" onclick="location.reload()">重試</button>
-    </div>`;
-  }
-}
-
-async function forceSync() {
-  if (!db || cfg.localOnly) { showToast('Firebase 未連線', 'error'); return; }
-  const localItems = JSON.parse(localStorage.getItem(ITEMS_KEY) || '[]');
-  if (localItems.length === 0) { showToast('本機沒有資料需要同步'); return; }
-
-  if (!confirm('將 ' + localItems.length + ' 件本機物品上傳到 Firebase，上傳後清除本機資料。\n\n繼續？')) return;
-
-  showScreen('s-processing');
-  setProcessingMsg('同步到 Firebase...');
-
-  let uploaded = 0, skipped = 0, errors = 0;
-  try {
-    for (const item of localItems) {
-      setProcessingMsg('上傳中 ' + (uploaded + skipped + errors + 1) + '/' + localItems.length + '...');
-      try {
-        // Check if already exists in Firestore
-        const doc = await db.collection(cfg.fbCol || 'items').doc(item.id).get();
-        if (doc.exists) {
-          skipped++;
-        } else {
-          await db.collection(cfg.fbCol || 'items').doc(item.id).set(item);
-          uploaded++;
-        }
-      } catch (e) {
-        errors++;
-        console.warn('Sync error for', item.id, e);
-      }
-    }
-
-    // Clear localStorage items after successful upload
-    if (errors === 0) {
-      localStorage.setItem(ITEMS_KEY, '[]');
-      showToast('已上傳 ' + uploaded + ' 件，跳過 ' + skipped + ' 件（已存在），本機已清除');
-    } else {
-      showToast('上傳 ' + uploaded + ' 件，失敗 ' + errors + ' 件（本機資料保留）', 'error');
-    }
-  } catch (e) {
-    showToast('同步失敗：' + e.message, 'error');
-  }
-
-  showScreen('s-main');
-  refreshMain();
-}
 
 // START
 init();
