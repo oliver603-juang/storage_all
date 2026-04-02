@@ -158,6 +158,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .select-mode .item-row:has(.item-checkbox:checked) { border-color:var(--accent); background:var(--accent-dim); }
 .batch-action-bar { position:fixed; bottom:0; left:0; right:0; background:var(--surface); border-top:1px solid var(--border); padding:14px 20px; display:flex; justify-content:space-between; align-items:center; transform:translateY(100%); transition:transform .3s; z-index:20; }
 .batch-action-bar.show { transform:translateY(0); }
+.sync-bar{padding:4px 20px 12px;font-size:12px}
+.sync-bar-inner{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 14px}
+.sync-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.sync-dot.online{background:var(--green)}
+.sync-dot.offline{background:var(--red)}
+.sync-dot.local{background:var(--accent)}
+.sync-info{flex:1;color:var(--muted);font-family:var(--mono);font-size:11px}
+.sync-btn{background:var(--accent-bg);border:1px solid var(--accent);color:var(--accent);padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;font-family:var(--sans);white-space:nowrap}
+.sync-btn:hover{background:var(--accent);color:#0d0d0d}
+.sync-btn:disabled{opacity:.4;cursor:not-allowed}
 .select-all-btn { display:none; margin-left:10px; background:var(--surface); border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:6px; font-size:11px; cursor:pointer; font-family:var(--sans); }
 .select-all-btn:hover { border-color:var(--accent); color:var(--accent); }
 .select-mode .select-all-btn { display:inline-block; }
@@ -237,6 +247,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button onclick="openInventory()" class="btn-sm">☰ 全部物品</button>
   </div>
   <div class="stats-row" id="stats-row"></div>
+  <div id="sync-status" class="sync-bar"></div>
   <div class="section-header">— 近期建檔</div>
   <div id="recent-list" class="item-list"></div>
 </div>
@@ -860,6 +871,7 @@ async function deleteItem(id) {
 // MAIN SCREEN REFRESH & SEARCH
 // ══════════════════════════════════════════════
 async function refreshMain() {
+  renderSyncStatus();
   const items = await loadItems();
   const locs = [...new Set(items.map(i=>i.locationName).filter(Boolean))], bagCount = [...new Set(items.map(i=>(i.locationId||'')+'_'+(i.bagNum||1)))].length;
   document.getElementById('stats-row').innerHTML = `<div class="stat-card"><div class="stat-num">${items.length}</div><div class="stat-label">物品總數</div></div><div class="stat-card"><div class="stat-num">${bagCount}</div><div class="stat-label">收納袋</div></div><div class="stat-card"><div class="stat-num">${locs.length}</div><div class="stat-label">收納位置</div></div>`;
@@ -1026,6 +1038,84 @@ async function confirmBatchDelete() {
   toggleSelectMode(); refreshMain(); openInventory();
 }
 function closeInventory() { if (isSelectMode) toggleSelectMode(); showScreen('s-main'); }
+
+// ══════════════════════════════════════════════
+// FIREBASE SYNC STATUS & FORCE SYNC
+// ══════════════════════════════════════════════
+function renderSyncStatus() {
+  const el = document.getElementById('sync-status');
+  if (!el) return;
+  const hasFirebase = !!(db && !cfg.localOnly);
+  const localItems = JSON.parse(localStorage.getItem(ITEMS_KEY) || '[]');
+
+  if (!cfg.fbProject && !cfg.fbApiKey) {
+    // No Firebase configured at all
+    el.innerHTML = `<div class="sync-bar-inner">
+      <div class="sync-dot local"></div>
+      <div class="sync-info">僅本機儲存 · ${localItems.length} 件</div>
+      <button class="sync-btn" onclick="showScreen('s-setup')">設定 Firebase</button>
+    </div>`;
+    return;
+  }
+
+  if (hasFirebase) {
+    el.innerHTML = `<div class="sync-bar-inner">
+      <div class="sync-dot online"></div>
+      <div class="sync-info">Firebase 已連線 · 本機 ${localItems.length} 件</div>
+      ${localItems.length > 0 ? '<button class="sync-btn" onclick="forceSync()">上傳並清除本地</button>' : '<span style="color:var(--green);font-size:11px">✓ 已同步</span>'}
+    </div>`;
+  } else {
+    el.innerHTML = `<div class="sync-bar-inner">
+      <div class="sync-dot offline"></div>
+      <div class="sync-info">Firebase 連線失敗 · 本機 ${localItems.length} 件</div>
+      <button class="sync-btn" onclick="location.reload()">重試</button>
+    </div>`;
+  }
+}
+
+async function forceSync() {
+  if (!db || cfg.localOnly) { showToast('Firebase 未連線', 'error'); return; }
+  const localItems = JSON.parse(localStorage.getItem(ITEMS_KEY) || '[]');
+  if (localItems.length === 0) { showToast('本機沒有資料需要同步'); return; }
+
+  if (!confirm('將 ' + localItems.length + ' 件本機物品上傳到 Firebase，上傳後清除本機資料。\n\n繼續？')) return;
+
+  showScreen('s-processing');
+  setProcessingMsg('同步到 Firebase...');
+
+  let uploaded = 0, skipped = 0, errors = 0;
+  try {
+    for (const item of localItems) {
+      setProcessingMsg('上傳中 ' + (uploaded + skipped + errors + 1) + '/' + localItems.length + '...');
+      try {
+        // Check if already exists in Firestore
+        const doc = await db.collection(cfg.fbCol || 'items').doc(item.id).get();
+        if (doc.exists) {
+          skipped++;
+        } else {
+          await db.collection(cfg.fbCol || 'items').doc(item.id).set(item);
+          uploaded++;
+        }
+      } catch (e) {
+        errors++;
+        console.warn('Sync error for', item.id, e);
+      }
+    }
+
+    // Clear localStorage items after successful upload
+    if (errors === 0) {
+      localStorage.setItem(ITEMS_KEY, '[]');
+      showToast('已上傳 ' + uploaded + ' 件，跳過 ' + skipped + ' 件（已存在），本機已清除');
+    } else {
+      showToast('上傳 ' + uploaded + ' 件，失敗 ' + errors + ' 件（本機資料保留）', 'error');
+    }
+  } catch (e) {
+    showToast('同步失敗：' + e.message, 'error');
+  }
+
+  showScreen('s-main');
+  refreshMain();
+}
 
 // START
 init();
