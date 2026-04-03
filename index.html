@@ -257,6 +257,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <div class="processing-container">
   <div class="spinner"></div>
   <p id="processing-msg">AI 辨識中...</p>
+<p id="processing-timer" style="color:var(--accent);font-family:var(--mono);font-size:13px;margin-top:8px"></p>
 </div>
 </div>
 
@@ -520,6 +521,10 @@ function useLocalOnly() {
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active'); window.scrollTo(0,0);
+  if (id !== 's-processing' && window._procTimer) {
+    clearInterval(window._procTimer); window._procTimer = null;
+    const el = document.getElementById('processing-timer'); if (el) el.textContent = '';
+  }
 }
 
 // ══════════════════════════════════════════════
@@ -593,12 +598,11 @@ async function startBatch(files, mode) {
         const { productThumb } = await cropLensScreenshot(fullDataUrl);
         item.dataUrl = productThumb;
         const base64Full = fullDataUrl.split(',')[1];
-        const extractPrompt = `這是一張 Google 智慧鏡頭或 Google AI 搜尋的截圖。請讀取截圖中關於物品的資訊，回應純 JSON（不含其他文字）：{"product_name": "完整商品名稱","brand": "品牌名稱","key_features": ["特點1"],"confidence": "high/medium/low"}`;
-        
-        const textResp = await callGeminiAPI(extractPrompt, base64Full);
-        const extracted = safeParseJSON(textResp);
-
-        result = await buildItemFromProductName(extracted.product_name || item.file.name, { ...extracted, description_snippets: extracted.key_features }, item.dataUrl);
+        const locList = getLocationPromptList();
+        const existingList = await buildExistingItemsList();
+        const combinedPrompt = `這是一張 Google 智慧鏡頭截圖。請從截圖中讀取商品資訊並補充規格。\n家中有以下收納位置：\n${locList}\n${existingList}\n回應純 JSON：\n{"name":"完整商品名稱","name_en":"English name","brand":"品牌","description":"50字內描述","keywords":["關鍵字"],"feature_tags":["標籤"],"suggested_location":"位置名稱","estimate_volume_ml":100,"matched_existing_id":"同一物品的id或null"}`;
+        const textResp = await callGeminiAPI(combinedPrompt, base64Full);
+        result = safeParseJSON(textResp);
         result._useThumb = item.dataUrl;
       } else {
         const imageData = await resizeImage(fullDataUrl, 1024);
@@ -654,17 +658,33 @@ async function handleLensScreenshot(event) {
 async function parseLensScreenshot(fullDataUrl) {
   showScreen('s-processing'); setProcessingMsg('解析 Google Lens 截圖...');
   try {
+    const _t0 = performance.now();
     const { productThumb } = await cropLensScreenshot(fullDataUrl);
-    currentImageData = productThumb; setProcessingMsg('讀取 AI 摘要文字...');
+    currentImageData = productThumb;
+    setProcessingMsg('AI 辨識 + 查詢規格中（單次 API）...');
 
+    // 合併為 1 次 API：同時讀截圖文字 + 查規格 + 重複偵測
     const base64Full = fullDataUrl.split(',')[1];
-    const extractPrompt = `這是一張 Google 智慧鏡頭或 Google AI 搜尋的截圖。請讀取截圖中關於物品的資訊，回應純 JSON（不含其他文字）：{"product_name": "完整商品名稱","brand": "品牌名稱","key_features": ["特點1"],"confidence": "high/medium/low"}`;
-    const textResp = await callGeminiAPI(extractPrompt, base64Full);
-    const extracted = safeParseJSON(textResp);
+    const locList = getLocationPromptList();
+    const existingList = await buildExistingItemsList();
+    const combinedPrompt = `這是一張 Google 智慧鏡頭或 Google AI 搜尋的截圖。
+請從截圖中讀取商品資訊，並根據你的知識補充完整規格。
 
-    setProcessingMsg(`找到「${extracted.product_name}」，查詢完整規格...`);
-    const item = await buildItemFromProductName(extracted.product_name, { ...extracted, description_snippets: extracted.key_features }, productThumb);
-    if (!item.imageData) item._useThumb = productThumb;
+家中有以下收納位置：
+${locList}
+${existingList}
+
+回應純 JSON（不含其他文字）：
+{"name": "完整商品名稱（含品牌型號和顏色）","name_en": "English name","brand": "品牌","description": "主要規格與特色，50字內","keywords": ["8~12個搜尋關鍵字"],"feature_tags": ["從標準標籤中選3~5個：書寫,筆類,墨水,鉛芯,修正,紙類,記錄,固定,裝訂,辦公,充電,USB,電源,電池,傳輸線,音頻,耳機,喇叭,藍牙,無線,手機配件,電腦配件,3C,數位,相機,儲存,切割,刀具,鍋具,餐具,烹飪,食材,調味,保鮮,清潔,洗滌,收納,照明,工具,螺絲,五金,測量,膠帶,黏貼,繪畫,手工,縫紉,護理,醫藥,防護,戶外,運動,園藝,汽車,衣物,鞋類,包袋"],"suggested_location": "建議的收納位置名稱","estimate_volume_ml": 100,"matched_existing_id": "如果新物品與已建檔清單中某物品是同一件實體商品（品牌型號相同、只是名稱寫法不同），填入該物品的 id。完全不同的物品填 null"}`;
+
+    const textResp = await callGeminiAPI(combinedPrompt, base64Full);
+    const item = safeParseJSON(textResp);
+    item._useThumb = productThumb;
+
+    const _elapsed = Math.round(performance.now() - _t0);
+    console.log('[TIMING] Lens single API total: ' + _elapsed + 'ms');
+    setProcessingMsg('完成！' + (_elapsed/1000).toFixed(1) + ' 秒');
+
     await processIdentifiedItem(item);
   } catch(err) {
     showScreen('s-main'); showToast('截圖解析失敗：' + err.message, 'error');
@@ -994,7 +1014,16 @@ async function confirmDelete(id, name) {
   if (document.getElementById('s-inventory').classList.contains('active')) openInventory();
 }
 
-function setProcessingMsg(msg) { document.getElementById('processing-msg').textContent = msg; }
+function setProcessingMsg(msg) {
+  document.getElementById('processing-msg').textContent = msg;
+  if (!window._procTimer) {
+    window._procStart = performance.now();
+    window._procTimer = setInterval(() => {
+      const el = document.getElementById('processing-timer');
+      if (el && window._procStart) el.textContent = '⏱ ' + ((performance.now() - window._procStart)/1000).toFixed(1) + 's';
+    }, 100);
+  }
+}
 function showToast(msg, type='success') { const t = document.getElementById('toast'); t.textContent = msg; t.style.background = type === 'error' ? 'var(--red)' : 'var(--green)'; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2800); }
 
 // ══════════════════════════════════════════════
