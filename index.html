@@ -598,10 +598,11 @@ async function startBatch(files, mode) {
         const { productThumb } = await cropLensScreenshot(fullDataUrl);
         item.dataUrl = productThumb;
         const base64Full = fullDataUrl.split(',')[1];
+        const resizedUrl = await resizeImage(fullDataUrl, 800);
+        const base64Resized = resizedUrl.split(',')[1];
         const locList = getLocationPromptList();
-        const existingList = await buildExistingItemsList();
-        const combinedPrompt = `這是一張 Google 智慧鏡頭截圖。請從截圖中讀取商品資訊並補充規格。\n家中有以下收納位置：\n${locList}\n${existingList}\n回應純 JSON：\n{"name":"完整商品名稱","name_en":"English name","brand":"品牌","description":"50字內描述","keywords":["關鍵字"],"feature_tags":["標籤"],"suggested_location":"位置名稱","estimate_volume_ml":100,"matched_existing_id":"同一物品的id或null"}`;
-        const textResp = await callGeminiAPI(combinedPrompt, base64Full);
+        const combinedPrompt = `讀取 Google Lens 截圖商品資訊，回應純 JSON：{"name":"商品全名含品牌型號顏色","name_en":"English","brand":"品牌","description":"30字內","keywords":["8個關鍵字"],"feature_tags":["3~5個標籤"],"suggested_location":"從:\n${locList}選一個","estimate_volume_ml":100}`;
+        const textResp = await callGeminiAPI(combinedPrompt, base64Resized);
         result = safeParseJSON(textResp);
         result._useThumb = item.dataUrl;
       } else {
@@ -656,35 +657,34 @@ async function handleLensScreenshot(event) {
 }
 
 async function parseLensScreenshot(fullDataUrl) {
-  showScreen('s-processing'); setProcessingMsg('解析 Google Lens 截圖...');
+  showScreen('s-processing'); setProcessingMsg('解析截圖...');
   try {
     const _t0 = performance.now();
     const { productThumb } = await cropLensScreenshot(fullDataUrl);
     currentImageData = productThumb;
-    setProcessingMsg('AI 辨識 + 查詢規格中（單次 API）...');
 
-    // 合併為 1 次 API：同時讀截圖文字 + 查規格 + 重複偵測
-    const base64Full = fullDataUrl.split(',')[1];
+    // 優化: 壓縮截圖 800px + 精簡 prompt + 單次 API
+    setProcessingMsg('壓縮圖片...');
+    const resizedUrl = await resizeImage(fullDataUrl, 800);
+    const base64 = resizedUrl.split(',')[1];
+    console.log('[TIMING] 圖片壓縮: ' + Math.round(performance.now()-_t0) + 'ms, ' + Math.round(base64.length/1024) + 'KB');
+
     const locList = getLocationPromptList();
     const existingList = await buildExistingItemsList();
-    const combinedPrompt = `這是一張 Google 智慧鏡頭或 Google AI 搜尋的截圖。
-請從截圖中讀取商品資訊，並根據你的知識補充完整規格。
+    const prompt = `讀取這張 Google Lens 截圖中的商品資訊，回應純 JSON：
+{"name":"商品全名含品牌型號顏色","name_en":"English","brand":"品牌","description":"30字內","keywords":["8個關鍵字"],"feature_tags":["3~5個標籤,從:書寫,筆類,辦公,充電,USB,電源,電池,音頻,耳機,藍牙,無線,3C,數位,切割,刀具,鍋具,餐具,烹飪,清潔,收納,照明,工具,五金,測量,手工,護理,戶外,運動,衣物,包袋"],"suggested_location":"從:${locList}選一個","estimate_volume_ml":100,"matched_existing_id":"與已建檔物品相同則填id,否則null。已建檔:${existingList}"}`;
 
-家中有以下收納位置：
-${locList}
-${existingList}
+    setProcessingMsg('AI 辨識中...');
+    const _t2 = performance.now();
+    const textResp = await callGeminiAPI(prompt, base64);
+    console.log('[TIMING] Gemini API: ' + Math.round(performance.now()-_t2) + 'ms');
 
-回應純 JSON（不含其他文字）：
-{"name": "完整商品名稱（含品牌型號和顏色）","name_en": "English name","brand": "品牌","description": "主要規格與特色，50字內","keywords": ["8~12個搜尋關鍵字"],"feature_tags": ["從標準標籤中選3~5個：書寫,筆類,墨水,鉛芯,修正,紙類,記錄,固定,裝訂,辦公,充電,USB,電源,電池,傳輸線,音頻,耳機,喇叭,藍牙,無線,手機配件,電腦配件,3C,數位,相機,儲存,切割,刀具,鍋具,餐具,烹飪,食材,調味,保鮮,清潔,洗滌,收納,照明,工具,螺絲,五金,測量,膠帶,黏貼,繪畫,手工,縫紉,護理,醫藥,防護,戶外,運動,園藝,汽車,衣物,鞋類,包袋"],"suggested_location": "建議的收納位置名稱","estimate_volume_ml": 100,"matched_existing_id": "如果新物品與已建檔清單中某物品是同一件實體商品（品牌型號相同、只是名稱寫法不同），填入該物品的 id。完全不同的物品填 null"}`;
-
-    const textResp = await callGeminiAPI(combinedPrompt, base64Full);
     const item = safeParseJSON(textResp);
     item._useThumb = productThumb;
 
     const _elapsed = Math.round(performance.now() - _t0);
-    console.log('[TIMING] Lens single API total: ' + _elapsed + 'ms');
-    setProcessingMsg('完成！' + (_elapsed/1000).toFixed(1) + ' 秒');
-
+    console.log('[TIMING] Lens total: ' + _elapsed + 'ms');
+    setProcessingMsg('完成！' + (_elapsed/1000).toFixed(1) + 's');
     await processIdentifiedItem(item);
   } catch(err) {
     showScreen('s-main'); showToast('截圖解析失敗：' + err.message, 'error');
