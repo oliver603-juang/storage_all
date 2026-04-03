@@ -377,11 +377,19 @@ const ITEMS_KEY   = 'storesmart_items';
 // ══════════════════════════════════════════════
 // GEMINI API HELPER (REPLACES CLAUDE)
 // ══════════════════════════════════════════════
-// Gemini 模型 fallback 清單：503 過載時自動切換
+// Gemini 模型 fallback：503 過載時自動切換，快取成功模型
 const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview'];
+let _lastWorkingModel = null; // 快取上次成功的模型
 
 async function callGeminiAPI(prompt, base64Image = null, _retryIdx = 0) {
-  const model = GEMINI_MODELS[_retryIdx] || GEMINI_MODELS[0];
+  // 優先使用上次成功的模型，跳過 503 等待
+  let model;
+  if (_retryIdx === 0 && _lastWorkingModel) {
+    model = _lastWorkingModel;
+  } else {
+    model = GEMINI_MODELS[_retryIdx] || GEMINI_MODELS[0];
+  }
+  
   const parts = [{ text: prompt }];
   if (base64Image) parts.push({ inlineData: { mimeType: 'image/jpeg', data: base64Image } });
 
@@ -391,14 +399,23 @@ async function callGeminiAPI(prompt, base64Image = null, _retryIdx = 0) {
     body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: "application/json" } })
   });
 
-  if (resp.status === 503 && _retryIdx < GEMINI_MODELS.length - 1) {
-    const next = GEMINI_MODELS[_retryIdx + 1];
-    console.log('[FALLBACK] ' + model + ' overloaded, switching to ' + next);
-    if (typeof setProcessingMsg === 'function') setProcessingMsg(model + ' 過載，切換 ' + next + '...');
-    return callGeminiAPI(prompt, base64Image, _retryIdx + 1);
+  if (resp.status === 503) {
+    // 清除快取，嘗試下一個模型
+    _lastWorkingModel = null;
+    const curIdx = GEMINI_MODELS.indexOf(model);
+    const nextIdx = curIdx >= 0 ? curIdx + 1 : _retryIdx + 1;
+    if (nextIdx < GEMINI_MODELS.length) {
+      const next = GEMINI_MODELS[nextIdx];
+      console.log('[FALLBACK] ' + model + ' 過載 → ' + next);
+      if (typeof setProcessingMsg === 'function') setProcessingMsg(model + ' 過載，切換 ' + next + '...');
+      return callGeminiAPI(prompt, base64Image, nextIdx);
+    }
   }
 
   if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(`Gemini API Error ${resp.status}: ${e?.error?.message || ''}`); }
+  
+  // 成功！快取此模型
+  _lastWorkingModel = model;
   const data = await resp.json();
   console.log('[TIMING] ' + model + ': ' + Math.round(performance.now() - _t) + 'ms');
   return data.candidates[0].content.parts[0].text;
@@ -674,8 +691,7 @@ async function parseLensScreenshot(fullDataUrl) {
 
     const locList = getLocationPromptList();
     const existingList = await buildExistingItemsList();
-    const prompt = `讀取這張 Google Lens 截圖中的商品資訊，回應純 JSON：
-{"name":"商品全名含品牌型號顏色","name_en":"English","brand":"品牌","description":"30字內","keywords":["8個關鍵字"],"feature_tags":["3~5個標籤,從:書寫,筆類,辦公,充電,USB,電源,電池,音頻,耳機,藍牙,無線,3C,數位,切割,刀具,鍋具,餐具,烹飪,清潔,收納,照明,工具,五金,測量,手工,護理,戶外,運動,衣物,包袋"],"suggested_location":"從:${locList}選一個","estimate_volume_ml":100,"matched_existing_id":"與已建檔物品相同則填id,否則null。已建檔:${existingList}"}`;
+    const prompt = `讀取截圖中商品,純JSON:{"name":"全名含品牌型號色","name_en":"EN","brand":"牌","description":"30字","keywords":["8詞"],"feature_tags":["3~5個,限選:書寫,筆類,辦公,充電,USB,電源,電池,音頻,耳機,藍牙,無線,3C,數位,切割,刀具,鍋具,餐具,烹飪,清潔,收納,照明,工具,五金,測量,手工,護理,戶外,運動,衣物,包袋,廚房電器,咖啡用品,飲品,食材,調味,保鮮,手機配件,電腦配件,相機,儲存,醫藥,護理,園藝,汽車"],"suggested_location":"從:${locList}選","estimate_volume_ml":數字,"matched_existing_id":"同物品填id否null。已有:${existingList}"}`;
 
     setProcessingMsg('AI 辨識中...');
     const _t2 = performance.now();
