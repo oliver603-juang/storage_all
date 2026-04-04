@@ -186,16 +186,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <h3>初始設定</h3>
     <label id="lbl-apikey">Gemini API Key <span class="req">必填</span></label>
     <input type="password" id="inp-apikey" placeholder="AIzaSy..." autocomplete="off">
-    <div class="divider"><span>Firebase 多裝置同步（選填）</span></div>
-    <label>Project ID</label>
-    <input type="text" id="inp-fbproject" placeholder="my-storage-app">
-    <label>Firebase API Key</label>
-    <input type="password" id="inp-fbapikey" placeholder="AIzaSy...">
-    <label>收藏集名稱</label>
-    <input type="text" id="inp-fbcol" placeholder="items" value="items">
-    <button class="btn-primary" onclick="saveSetup()">開始使用</button>
+    <div style="margin-top:16px;padding:10px 14px;background:var(--green-bg);border:1px solid var(--green);border-radius:8px;font-size:12px;color:var(--green)">☁️ Firebase 多裝置同步已預設啟用<br><span style="color:var(--muted);font-size:11px">Project: storesmart-7ae65 · 輸入 API Key 即自動連線</span></div>
+    <input type="hidden" id="inp-fbproject" value="storesmart-7ae65">
+    <input type="hidden" id="inp-fbapikey" value="AIzaSyDZltB8OQti4ZPkME-K95HXZL51oByXE10">
+    <input type="hidden" id="inp-fbcol" value="items">
+    <button class="btn-primary" onclick="saveSetup()">開始使用（含雲端同步）</button>
     <button class="btn-ghost" onclick="useLocalOnly()">僅使用本機儲存（單裝置）</button>
-    <p class="opt-label">Firebase 設定可讓多支手機共用同一個收納資料庫</p>
   </div>
 </div>
 </div>
@@ -374,6 +370,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 const STORAGE_KEY = 'storesmart_cfg';
 const ITEMS_KEY   = 'storesmart_items';
 
+// Firebase 預設值（寫死，新裝置自動連線）
+const DEFAULT_FB = {
+  fbProject: 'storesmart-7ae65',
+  fbApiKey: 'AIzaSyDZltB8OQti4ZPkME-K95HXZL51oByXE10',
+  fbCol: 'items'
+};
+
 // ══════════════════════════════════════════════
 // GEMINI API HELPER (REPLACES CLAUDE)
 // ══════════════════════════════════════════════
@@ -507,7 +510,11 @@ function _init() {
     if (cfg.fbProject) document.getElementById('inp-fbproject').value = cfg.fbProject;
     if (cfg.fbApiKey)  document.getElementById('inp-fbapikey').value  = cfg.fbApiKey;
     if (cfg.fbCol)     document.getElementById('inp-fbcol').value     = cfg.fbCol;
-    if (cfg.apiKey) { initFirebase(); showScreen('s-main'); refreshMain(); return; }
+    if (cfg.apiKey) {
+      // 自動補上 Firebase 設定（舊裝置升級用）
+      if (!cfg.fbProject) { cfg.fbProject = DEFAULT_FB.fbProject; cfg.fbApiKey = DEFAULT_FB.fbApiKey; cfg.fbCol = DEFAULT_FB.fbCol; delete cfg.localOnly; localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); }
+      initFirebase(); showScreen('s-main'); refreshMain(); return;
+    }
   }
   showScreen('s-setup');
 }
@@ -523,16 +530,16 @@ function initFirebase() {
 }
 
 function saveSetup() {
-  const apiKey = document.getElementById('inp-apikey').value.trim(), fbProject = document.getElementById('inp-fbproject').value.trim(), fbApiKey = document.getElementById('inp-fbapikey').value.trim(), fbCol = document.getElementById('inp-fbcol').value.trim() || 'items';
-  if (!apiKey) { alert('請輸入 API Key'); return; }
-  cfg = { apiKey, provider: 'gemini', fbProject, fbApiKey, fbCol };
+  const apiKey = document.getElementById('inp-apikey').value.trim();
+  if (!apiKey) { alert('請輸入 Gemini API Key'); return; }
+  cfg = { apiKey, provider: 'gemini', ...DEFAULT_FB };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
   initFirebase(); showScreen('s-main'); refreshMain();
 }
 
 function useLocalOnly() {
   const apiKey = document.getElementById('inp-apikey').value.trim();
-  if (!apiKey) { alert('請輸入 API Key'); return; }
+  if (!apiKey) { alert('請輸入 Gemini API Key'); return; }
   cfg = { apiKey, provider: 'gemini', localOnly: true };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
   showScreen('s-main'); refreshMain();
