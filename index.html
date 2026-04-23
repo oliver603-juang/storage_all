@@ -207,20 +207,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 </div>
 <div class="main-content">
   <div class="scan-section">
-    <input type="file" id="camera-input" accept="image/*" capture="environment" style="display:none" onchange="handleCapture(event)">
     <input type="file" id="file-input" accept="image/*" multiple style="display:none" onchange="handleBatchCapture(event)">
-    <button class="scan-btn" onclick="triggerCamera()">
+    <input type="file" id="lens-input" accept="image/*" multiple style="display:none" onchange="handleBatchLens(event)">
+    <input type="file" id="sv-visual-pick" accept="image/*" style="display:none">
+    <button class="scan-btn" onclick="document.getElementById('file-input').click()">
       <div class="scan-icon">⬡</div>
-      <span>拍照建檔</span>
-      <span class="scan-sub">點擊開啟相機</span>
+      <span>實物建檔</span>
+      <span class="scan-sub">相機或相簿 · 可多選</span>
     </button>
     <div style="display:flex;gap:8px;margin-top:10px">
-      <button class="btn-sm" style="flex:1" onclick="document.getElementById('file-input').click()">相簿（可多選）</button>
-      <button class="btn-sm" style="flex:1" onclick="document.getElementById('lens-input').click()">Lens 截圖（可多選）</button>
+      <button class="btn-sm" style="flex:1" onclick="document.getElementById('lens-input').click()">📸 Lens 截圖建檔</button>
+      <button class="btn-sm" style="flex:1;background:var(--accent-bg);border-color:var(--accent);color:var(--accent);font-weight:700" onclick="runStorageVisualMatch()">🧠 視覺比對</button>
     </div>
-    <button class="btn-sm" style="flex:1;margin-top:10px;font-weight:700;background:var(--accent-bg);border-color:var(--accent);color:var(--accent)" onclick="runStorageVisualMatch()">🧠 視覺比對（找出這是哪件物品）</button>
-    <input type="file" id="sv-visual-pick" accept="image/*" style="display:none">
-    <input type="file" id="lens-input" accept="image/*" multiple style="display:none" onchange="handleBatchLens(event)">
     <div style="margin-top:12px">
       <div style="display:flex;gap:8px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0 12px">
         <span style="font-size:15px;color:var(--muted)">🔍</span>
@@ -230,6 +228,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
       </div>
       <div style="font-size:11px;color:var(--dim);margin-top:4px;padding:0 4px">輸入商品名稱後系統會自動查詢規格並建立標籤</div>
     </div>
+  </div></div>
   </div>
   <div class="search-section">
     <div class="search-bar">
@@ -366,6 +365,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <div id="toast" class="toast"></div>
 
 <script>
+/* StoreSmart v1.2 — cleaned up: removed dead code (handleLensScreenshot, triggerCamera, handleCapture, identifyItem); merged camera+album to single "實物建檔" button */
 // ══════════════════════════════════════════════
 // CONFIG & STATE
 // ══════════════════════════════════════════════
@@ -559,13 +559,8 @@ function showScreen(id) {
 // ══════════════════════════════════════════════
 // CAMERA / FILE CAPTURE
 // ══════════════════════════════════════════════
-function triggerCamera() { document.getElementById('camera-input').click(); }
-async function handleCapture(event) {
-  const file = event.target.files[0]; if (!file) return; event.target.value = '';
-  const reader = new FileReader();
-  reader.onload = async (e) => { currentImageData = await resizeImage(e.target.result, 1024); await identifyItem(currentImageData); };
-  reader.readAsDataURL(file);
-}
+// [v1.2] removed: triggerCamera (inlined in scan-btn onclick)
+// [v1.2] removed: handleCapture (camera-input dropped, use handleBatchCapture for all)
 
 async function resizeImage(dataUrl, maxDim) {
   return new Promise(resolve => {
@@ -680,10 +675,7 @@ function renderBatchList() {
 // ══════════════════════════════════════════════
 // GOOGLE LENS SCREENSHOT MODE
 // ══════════════════════════════════════════════
-async function handleLensScreenshot(event) {
-  const file = event.target.files[0]; if (!file) return; event.target.value = '';
-  const reader = new FileReader(); reader.onload = async (e) => { await parseLensScreenshot(e.target.result); }; reader.readAsDataURL(file);
-}
+// [v1.2] removed: handleLensScreenshot (dead code)
 
 async function parseLensScreenshot(fullDataUrl) {
   showScreen('s-processing'); setProcessingMsg('解析截圖...');
@@ -767,15 +759,7 @@ async function buildItemFromProductName(productName, hints={}, imageDataUrl=null
   return safeParseJSON(textResp);
 }
 
-async function identifyItem(imageData) {
-  showScreen('s-processing');
-  try { setProcessingMsg('AI 辨識物品中...'); const item = await identifyWithGemini(imageData); await processIdentifiedItem(item); } 
-  catch(err) {
-    showScreen('s-main'); const msg = err.message || '';
-    if (msg.includes('400') || msg.includes('API key not valid')) { showToast('API Key 無效，請重新設定', 'error'); setTimeout(() => showScreen('s-setup'), 1500); } 
-    else { showToast('辨識失敗：' + msg, 'error'); }
-  }
-}
+// [v1.2] removed: identifyItem (wrapper, now handleBatchCapture calls identifyWithGemini directly)
 
 function safeParseJSON(text) {
   text = text.replace(/^```json\s*/i, '').replace(/```\s*$/,'').trim();
