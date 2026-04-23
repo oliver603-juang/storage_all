@@ -218,6 +218,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
       <button class="btn-sm" style="flex:1" onclick="document.getElementById('file-input').click()">相簿（可多選）</button>
       <button class="btn-sm" style="flex:1" onclick="document.getElementById('lens-input').click()">Lens 截圖（可多選）</button>
     </div>
+    <button class="btn-sm" style="flex:1;margin-top:10px;font-weight:700;background:var(--accent-bg);border-color:var(--accent);color:var(--accent)" onclick="runStorageVisualMatch()">🧠 視覺比對（找出這是哪件物品）</button>
+    <input type="file" id="sv-visual-pick" accept="image/*" style="display:none">
     <input type="file" id="lens-input" accept="image/*" multiple style="display:none" onchange="handleBatchLens(event)">
     <div style="margin-top:12px">
       <div style="display:flex;gap:8px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0 12px">
@@ -1201,6 +1203,155 @@ async function forceSync() {
   showScreen('s-main');
   refreshMain();
 }
+
+
+async function callGeminiMultiImage(prompt, base64Images, systemInstruction) {
+  const model = _lastWorkingModel || GEMINI_MODELS[0];
+  const parts = [{ text: prompt }];
+  for (const img of base64Images) {
+    const b64 = img.indexOf(',') >= 0 ? img.split(',')[1] : img;
+    parts.push({ inlineData: { mimeType: 'image/jpeg', data: b64 } });
+  }
+  const body = {
+    contents: [{ parts }],
+    generationConfig: { responseMimeType: 'application/json' }
+  };
+  if (systemInstruction) {
+    body.systemInstruction = { parts: [{ text: systemInstruction }] };
+  }
+  const resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + cfg.apiKey, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({}));
+    throw new Error('Gemini API Error ' + resp.status + ': ' + (e?.error?.message || ''));
+  }
+  const data = await resp.json();
+  return data.candidates[0].content.parts[0].text;
+}
+
+async function matchStorageVisual(queryDataUrl) {
+  const items = await loadItems();
+  const all = items.filter(i => i.imageData && i.imageData.length > 100);
+  if (all.length === 0) {
+    return { error: 'NO_CANDIDATES', message: '資料庫中沒有任何帶縮圖的物品' };
+  }
+  const MAX = 30;
+  const candidates = all.slice(0, MAX);
+  const info = candidates.map((c, idx) => ({
+    index: idx,
+    name: (c.name || '').substring(0, 50),
+    location: c.locationName || '',
+    bag: c.bagNum || 1,
+    tags: (c.featureTags || []).slice(0, 4).join(',')
+  }));
+  const SYS = '你是家中物品視覺辨識專家。任務：比對查詢圖與資料庫候選圖，找出是否為同一件實體物品。嚴格比對，寧可回報無匹配也不猜測。考量：品牌、型號、顏色、材質、形狀。回應強制 JSON，不得有前後綴文字或 markdown 標記。';
+  const prompt = '任務：從家中物品資料庫找出這件物品\n第 1 張=查詢圖（使用者剛拍的/上傳的）\n第 2 張起=資料庫候選物品（共 ' + candidates.length + ' 張縮圖）\n\n候選清單：\n' + JSON.stringify(info, null, 2) + '\n\n回傳 JSON 格式：\n{"bestMatch":{"index":0,"name":"","location":"","bag":1,"confidence":78,"reason":"20字內"},"decision":"match|uncertain|no_match"}\n\n信心度門檻：>=70 match, 40-70 uncertain, <40 no_match（此時 index=-1）';
+  try {
+    const images = [queryDataUrl].concat(candidates.map(c => c.imageData));
+    const resp = await callGeminiMultiImage(prompt, images, SYS);
+    const cleaned = resp.replace(/\`\`\`json\s*/g, '').replace(/\`\`\`\s*/g, '').trim();
+    const r = JSON.parse(cleaned);
+    if (r.bestMatch && r.bestMatch.index >= 0 && r.bestMatch.index < candidates.length) {
+      r.bestMatch._internalItem = candidates[r.bestMatch.index];
+    }
+    r.meta = { totalCandidates: all.length, usedCandidates: candidates.length };
+    return r;
+  } catch (e) {
+    return { error: 'AI_ERROR', message: e.message };
+  }
+}
+
+function showStorageMatchDialog(item, best, fullResult) {
+  const existing = document.getElementById('sv-match-dialog');
+  if (existing) existing.remove();
+  const confColor = fullResult.decision === 'match' ? 'var(--green)' : (fullResult.decision === 'uncertain' ? 'var(--accent)' : 'var(--muted)');
+  const confLabel = fullResult.decision === 'match' ? '✅ 強烈匹配' : (fullResult.decision === 'uncertain' ? '❓ 疑似匹配' : '📭 無匹配');
+  const locationDisplay = '#' + (item.bagNum || 1) + ' ' + (item.locationName || '未分類');
+  const tags = (item.featureTags || []).join('、') || '-';
+  const escHtml = function(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); };
+  const ov = document.createElement('div');
+  ov.id = 'sv-match-dialog';
+  ov.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px';
+  const thumbSrc = item.imageData || '';
+  ov.innerHTML = [
+    '<div style="background:var(--card,#222);border-radius:14px;padding:18px;max-width:440px;width:100%;color:var(--text,#eee);border:1px solid var(--border,#444);max-height:92vh;overflow-y:auto">',
+    '<h3 style="margin:0 0 12px 0;font-size:18px;color:' + confColor + '">🧠 ' + confLabel + '（信心 ' + best.confidence + '%）</h3>',
+    '<div style="display:flex;gap:10px;margin-bottom:12px;align-items:flex-start">',
+    (thumbSrc ? '<img src="' + thumbSrc + '" style="width:110px;height:auto;border-radius:8px;border:1px solid var(--border,#555);flex-shrink:0;object-fit:cover">' : ''),
+    '<div style="flex:1;font-size:13px;line-height:1.6">',
+    '<div style="font-weight:700;font-size:14px;margin-bottom:4px">' + escHtml((item.name || '').substring(0, 60)) + '</div>',
+    '<div style="color:var(--accent,#ffa726);font-weight:600;margin:6px 0">📍 ' + escHtml(locationDisplay) + '</div>',
+    '<div style="color:var(--muted,#aaa);font-size:12px">🏷 ' + escHtml(tags) + '</div>',
+    '<div style="color:var(--muted,#888);font-size:11px;margin-top:4px">數量：' + (item.quantity || 1) + '</div>',
+    '</div></div>',
+    (best.reason ? '<div style="background:var(--surface,#2a2a2a);border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:var(--muted,#aaa);font-style:italic">💬 ' + escHtml(String(best.reason).substring(0, 100)) + '</div>' : ''),
+    '<div style="font-size:11px;color:var(--muted,#888);margin-bottom:10px">比對範圍：' + fullResult.meta.usedCandidates + '/' + fullResult.meta.totalCandidates + ' 張縮圖</div>',
+    '<div style="display:flex;gap:8px">',
+    '<button onclick="document.getElementById(\'sv-match-dialog\').remove()" style="flex:1;padding:10px;background:none;border:1px solid var(--border,#555);color:var(--text,#ccc);border-radius:8px;font-size:14px;cursor:pointer">關閉</button>',
+    '<button onclick="svJumpToItem(\'' + item.id + '\')" style="flex:2;padding:10px;background:var(--accent,#ffa726);border:none;color:#0d0d0d;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">✓ 查看詳情</button>',
+    '</div></div>'
+  ].join('');
+  document.body.appendChild(ov);
+}
+
+window.svJumpToItem = function(itemId) {
+  const dlg = document.getElementById('sv-match-dialog');
+  if (dlg) dlg.remove();
+  openItemDetail(itemId);
+};
+
+(function() {
+  const fi = document.getElementById('sv-visual-pick');
+  if (!fi) return;
+  fi.addEventListener('change', async function(ev) {
+    const file = ev.target.files[0];
+    if (!file) return;
+    ev.target.value = '';
+    showToast('📤 讀取圖片中...');
+    const reader = new FileReader();
+    reader.onload = async function(e) {
+      const resized = await resizeImage(e.target.result, 800);
+      showScreen('s-processing');
+      setProcessingMsg('🧠 視覺比對中（~10 秒）...');
+      try {
+        const result = await matchStorageVisual(resized);
+        showScreen('s-main');
+        if (result.error) {
+          showToast('❌ ' + (result.message || result.error), 'error');
+          return;
+        }
+        const best = result.bestMatch;
+        if (!best || best.index < 0 || result.decision === 'no_match') {
+          showToast('📭 找不到任何匹配的物品');
+          return;
+        }
+        const item = best._internalItem;
+        if (!item) {
+          showToast('❌ 匹配物品資料遺失', 'error');
+          return;
+        }
+        showStorageMatchDialog(item, best, result);
+      } catch (err) {
+        showScreen('s-main');
+        showToast('❌ 錯誤：' + err.message, 'error');
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+})();
+
+window.runStorageVisualMatch = function() {
+  const fi = document.getElementById('sv-visual-pick');
+  if (!fi) {
+    showToast('❌ 檔案選擇器未就緒', 'error');
+    return;
+  }
+  fi.click();
+};
+console.log('[v1.1] Visual match installed');
 
 // START
 init();
