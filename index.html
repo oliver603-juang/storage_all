@@ -813,14 +813,48 @@ async function identifyWithGemini(imageData) {
 async function processIdentifiedItem(item) {
   setProcessingMsg('指派收納位置...');
   const allItems = await loadItems();
-  // AI 語意重複偵測：優先使用 AI 回傳的 matched_existing_id
-  let match = null;
-  if (item.matched_existing_id && item.matched_existing_id !== 'null') {
-    match = allItems.find(i => i.id === item.matched_existing_id);
+  const volMl = parseInt(item.estimate_volume_ml) || 100, featureTags = item.feature_tags || [], qty = 1;
+
+  // ══ [BrickSort 移植 §3] 視覺主鍵優先：圖對圖比對既有件 ══
+  // 文字比對降為 fallback。match→沿用既有位置；uncertain→確認框；no_match→放行新建。
+  let match = null;            // 視為「同一件」的既有物件
+  let visualResult = null;     // 圖對圖結果（供 UI 顯示信心）
+  let needConfirm = false;     // uncertain：需人為裁決
+  try {
+    if (currentImageData && currentImageData.length > 100) {
+      setProcessingMsg('視覺比對既有物品...');
+      // [§1 統一口徑] 查詢圖重新壓到與建檔縮圖相同的 800px/0.85，避免尺寸差異拉低信心
+      let queryImg = currentImageData;
+      try { queryImg = await resizeImage(currentImageData, 800); } catch(_) {}
+      visualResult = await matchStorageVisual(queryImg, { estimateVolumeMl: volMl, featureTags });
+      try { console.log('[visualMatch] decision=' + (visualResult && visualResult.decision) + ' conf=' + (visualResult && visualResult.bestMatch && visualResult.bestMatch.confidence)); } catch(e) {}
+      if (visualResult && !visualResult.error && visualResult.bestMatch && visualResult.bestMatch._internalItem) {
+        if (visualResult.decision === 'match') {
+          match = visualResult.bestMatch._internalItem;            // ≥70：同一件
+        } else if (visualResult.decision === 'uncertain') {
+          match = visualResult.bestMatch._internalItem;            // 40-69：疑似 → 走確認框
+          needConfirm = true;
+        }
+      }
+    }
+  } catch (e) { try { console.log('[visualMatch] 失敗，改用文字 fallback：' + e.message); } catch(_) {} }
+
+  // ══ Fallback：圖對圖無結果時，才用文字比對（matched_existing_id / findDuplicate）══
+  if (!match) {
+    if (item.matched_existing_id && item.matched_existing_id !== 'null') {
+      match = allItems.find(i => i.id === item.matched_existing_id);
+    }
+    if (!match) match = findDuplicate(item.name, item.keywords, allItems);
   }
-  if (!match) match = findDuplicate(item.name, item.keywords, allItems); // fallback
-  const loc = LOCATIONS.find(l => l.name === (item.suggested_location || '')) || LOCATIONS[0];
-  const volMl = parseInt(item.estimate_volume_ml) || 100, featureTags = item.feature_tags || [], qty = 1, bagInfo = assignBag(loc.id, featureTags, volMl * qty, allItems);
+
+  // ══ [§4] 位置決定：match→繼承既有 locationId/bagNum（嚴禁重新 assignBag）；no_match→分配新號 ══
+  let bagInfo;
+  if (match) {
+    bagInfo = { locationId: match.locationId, locationName: match.locationName, bagNum: match.bagNum };
+  } else {
+    const loc = LOCATIONS.find(l => l.name === (item.suggested_location || '')) || LOCATIONS[0];
+    bagInfo = assignBag(loc.id, featureTags, volMl * qty, allItems);
+  }
 
   pendingItem = { ...item, ...bagInfo, featureTags, estimateVolumeMl: volMl, quantity: qty, imageData: currentImageData, isUpdate: !!match, matchedId: match ? match.id : null };
 
@@ -841,8 +875,23 @@ async function processIdentifiedItem(item) {
   const banner = document.getElementById('match-banner');
   if (match) {
     banner.style.display = 'block';
-    banner.innerHTML = `<div class="match-banner-title" style="color:var(--accent)">⚠ 找到類似物品</div><div class="match-banner-sub" style="margin-bottom:10px">「${match.name}」已在 <strong>#${match.bagNum} ${match.locationName}</strong></div><div style="display:flex;gap:8px"><button class="btn-sm" style="flex:1;background:var(--green-bg);border-color:var(--green);color:var(--green)" onclick="chooseDuplicateAction('addQty')">同一物品 +1</button><button class="btn-sm" style="flex:1" onclick="chooseDuplicateAction('newItem')">不同物品（另外建檔）</button></div>`;
-    pendingItem._matchRef = match; pendingItem.isUpdate = false;
+    const conf = (visualResult && visualResult.bestMatch && visualResult.bestMatch.confidence) || 0;
+    const viaVisual = !!(visualResult && visualResult.bestMatch && visualResult.bestMatch._internalItem && visualResult.bestMatch._internalItem.id === match.id);
+    const confTxt = viaVisual ? ('（視覺信心 ' + conf + '%）') : '（文字比對）';
+    if (match && !needConfirm && viaVisual) {
+      // [§3/§4] 強匹配 ≥70：直接認定同一件，沿用既有位置、數量 +1
+      pendingItem.isUpdate = true; pendingItem.matchedId = match.id;
+      pendingItem.locationId = match.locationId; pendingItem.locationName = match.locationName; pendingItem.bagNum = match.bagNum;
+      pendingItem.quantity = (match.quantity || 1) + 1; pendingItem.name = match.name;
+      pendingItem.featureTags = match.featureTags || pendingItem.featureTags;
+      pendingItem._matchRef = match;
+      const qd = document.getElementById('qty-display'); if (qd) qd.textContent = pendingItem.quantity;
+      banner.innerHTML = `<div class="match-banner-title" style="color:var(--green)">✅ 已辨識為既有物品 ${confTxt}</div><div class="match-banner-sub" style="margin-bottom:10px">「${match.name}」請放回 <strong>#${match.bagNum} ${match.locationName}</strong>，數量將更新為 ${pendingItem.quantity}</div><div style="display:flex;gap:8px"><button class="btn-sm" style="flex:1">✓ 同一物品 +1（預設）</button><button class="btn-sm" style="flex:1;background:var(--surface)" onclick="chooseDuplicateAction('newItem')">其實是不同物品</button></div>`;
+    } else {
+      // uncertain 40-69，或文字 fallback 命中：交給使用者裁決
+      banner.innerHTML = `<div class="match-banner-title" style="color:var(--accent)">⚠ 疑似既有物品 ${confTxt}</div><div class="match-banner-sub" style="margin-bottom:10px">「${match.name}」已在 <strong>#${match.bagNum} ${match.locationName}</strong></div><div style="display:flex;gap:8px"><button class="btn-sm" style="flex:1;background:var(--green-bg);border-color:var(--green);color:var(--green)" onclick="chooseDuplicateAction('addQty')">同一物品 +1</button><button class="btn-sm" style="flex:1" onclick="chooseDuplicateAction('newItem')">不同物品（另外建檔）</button></div>`;
+      pendingItem._matchRef = match; pendingItem.isUpdate = false;
+    }
   } else { banner.style.display = 'none'; }
 
   document.getElementById('result-zonename').textContent = pendingItem.locationName; document.getElementById('result-bag').textContent = '#' + pendingItem.bagNum; showScreen('s-result');
@@ -1216,14 +1265,30 @@ async function callGeminiMultiImage(prompt, base64Images, systemInstruction) {
   return data.candidates[0].content.parts[0].text;
 }
 
-async function matchStorageVisual(queryDataUrl) {
+async function matchStorageVisual(queryDataUrl, queryItem) {
   const items = await loadItems();
   const all = items.filter(i => i.imageData && i.imageData.length > 100);
   if (all.length === 0) {
     return { error: 'NO_CANDIDATES', message: '資料庫中沒有任何帶縮圖的物品' };
   }
   const MAX = 30;
-  const candidates = all.slice(0, MAX);
+  // [BrickSort 移植 §2] 體積±30% 或 featureTags 交集 雙軌粗篩，突破 30 張上限、降低無關干擾
+  let pool = all;
+  if (queryItem) {
+    const qVol = queryItem.estimateVolumeMl || queryItem.estimate_volume_ml || 0;
+    const qTags = (queryItem.featureTags || queryItem.feature_tags || []).map(t => String(t).toLowerCase());
+    const filtered = all.filter(item => {
+      const iVol = item.estimateVolumeMl || 0;
+      const isVolumeMatch = qVol > 0 && iVol > 0 ? (Math.abs(iVol - qVol) / qVol <= 0.3) : false;
+      const iTags = (item.featureTags || []).map(t => String(t).toLowerCase());
+      const hasCommonTag = qTags.length > 0 && iTags.some(t => qTags.includes(t));
+      return isVolumeMatch || hasCommonTag;
+    });
+    // 粗篩後若有候選就用粗篩結果；若篩空（例如全新類型）退回全部，避免漏比
+    if (filtered.length > 0) pool = filtered;
+  }
+  const candidates = pool.slice(0, MAX);
+  try { console.log('[visualMatch] 粗篩候選 ' + candidates.length + '/' + all.length + ' 件'); } catch(e) {}
   const info = candidates.map((c, idx) => ({
     index: idx,
     name: (c.name || '').substring(0, 50),
@@ -1241,7 +1306,7 @@ async function matchStorageVisual(queryDataUrl) {
     if (r.bestMatch && r.bestMatch.index >= 0 && r.bestMatch.index < candidates.length) {
       r.bestMatch._internalItem = candidates[r.bestMatch.index];
     }
-    r.meta = { totalCandidates: all.length, usedCandidates: candidates.length };
+    r.meta = { totalCandidates: all.length, usedCandidates: candidates.length, pooledCandidates: pool.length };
     return r;
   } catch (e) {
     return { error: 'AI_ERROR', message: e.message };
