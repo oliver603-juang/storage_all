@@ -183,6 +183,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <p class="logo-sub">智慧收納系統</p>
   </div>
   <div class="setup-card">
+    <button id="setup-back-btn" onclick="showScreen('s-main')" style="display:none;background:none;border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;margin-bottom:12px">← 返回首頁</button>
     <h3>初始設定</h3>
     <label id="lbl-apikey">Gemini API Key <span class="req">必填</span></label>
     <input type="password" id="inp-apikey" placeholder="AIzaSy..." autocomplete="off">
@@ -420,10 +421,22 @@ async function callGeminiAPI(prompt, base64Image = null, _retryIdx = 0) {
 // LOCATION-BASED STORAGE SYSTEM
 // ══════════════════════════════════════════════
 const LOCATIONS_KEY = 'storesmart_locations';
+const FILL_RATE = 0.65; // 柜体装填率：留空隙/取放空间，约 65%
+// 由柜体长宽高(cm)与单袋容量(ml)估「最多能放几个袋」（只显示，不强制）
+function calcMaxBags(loc){
+  const l=Number(loc&&loc.dimL)||0, w=Number(loc&&loc.dimW)||0, h=Number(loc&&loc.dimH)||0, bag=Number(loc&&loc.bagSizeMl)||0;
+  if(l<=0||w<=0||h<=0||bag<=0) return null;        // 没填齐就不显示
+  const cabinetMl = l*w*h;                          // 1cm³ = 1ml
+  return Math.floor(cabinetMl * FILL_RATE / bag);
+}
+function countLocBags(locId, allItems){
+  const set={}; (allItems||[]).filter(i=>i.locationId===locId).forEach(i=>{set[i.bagNum||1]=1;});
+  return Object.keys(set).length;
+}
 const DEFAULT_LOCATIONS = [
-  { id:'loc_1', name:'書房書櫃', bagSizeMl:2000, hints:'文具、電子配件、小物' },
-  { id:'loc_2', name:'車庫層架', bagSizeMl:10000, hints:'工具、五金、戶外' },
-  { id:'loc_3', name:'廚房層架1', bagSizeMl:5000, hints:'餐具，南北貨' },
+  { id:'loc_1', name:'書房書櫃', bagSizeMl:2000, hints:'文具、電子配件、小物', dimL:0, dimW:0, dimH:0 },
+  { id:'loc_2', name:'車庫層架', bagSizeMl:10000, hints:'工具、五金、戶外', dimL:0, dimW:0, dimH:0 },
+  { id:'loc_3', name:'廚房層架1', bagSizeMl:5000, hints:'餐具，南北貨', dimL:0, dimW:0, dimH:0 },
 ];
 
 let LOCATIONS = [];
@@ -435,9 +448,10 @@ function loadLocations() {
 
 function saveLocations() { localStorage.setItem(LOCATIONS_KEY, JSON.stringify(LOCATIONS)); }
 
-function addLocation(name, bagSizeMl, hints) {
+function addLocation(name, bagSizeMl, hints, dims) {
   const id = 'loc_' + Date.now();
-  LOCATIONS.push({ id, name, bagSizeMl: Number(bagSizeMl), hints });
+  dims = dims || {};
+  LOCATIONS.push({ id, name, bagSizeMl: Number(bagSizeMl), hints, dimL:Number(dims.l)||0, dimW:Number(dims.w)||0, dimH:Number(dims.h)||0 });
   saveLocations();
   return LOCATIONS[LOCATIONS.length - 1];
 }
@@ -540,6 +554,10 @@ function useLocalOnly() {
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active'); window.scrollTo(0,0);
+  if (id === 's-setup') {
+    const bb = document.getElementById('setup-back-btn');
+    if (bb) bb.style.display = (cfg && cfg.apiKey) ? 'inline-block' : 'none';
+  }
   if (id !== 's-processing' && window._procTimer) {
     clearInterval(window._procTimer); window._procTimer = null;
     const el = document.getElementById('processing-timer'); if (el) el.textContent = '';
@@ -1056,17 +1074,31 @@ function showToast(msg, type='success') { const t = document.getElementById('toa
 // ══════════════════════════════════════════════
 function openLocations() {
   const inputStyle = 'width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:14px;margin-bottom:8px', labelStyle = 'display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-family:var(--mono)';
-  let html = `<div style="margin-bottom:16px;font-size:13px;color:var(--muted)">定義家中的收納位置，AI 辨識物品後會建議最適合的位置。<br><span style="color:var(--accent)">目前共 ${LOCATIONS.length} 個收納位置</span></div>`;
-  LOCATIONS.forEach((loc) => { html += `<div id="loc-card-${loc.id}" class="zone-group" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px"><label style="${labelStyle}">位置名稱</label><input type="text" id="edit-name-${loc.id}" value="${loc.name}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><label style="${labelStyle}">袋子容量 (ml) — 目前 ${loc.bagSizeMl >= 1000 ? (loc.bagSizeMl/1000)+'L' : loc.bagSizeMl+'ml'}</label><input type="number" id="edit-size-${loc.id}" value="${loc.bagSizeMl}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><label style="${labelStyle}">提示詞</label><input type="text" id="edit-hints-${loc.id}" value="${loc.hints}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><div style="display:flex;gap:8px;margin-top:4px"><button id="save-btn-${loc.id}" class="btn-sm" style="display:none;background:var(--accent-bg);border-color:var(--accent);color:var(--accent)" onclick="doSaveLocation('${loc.id}')">儲存變更</button><button class="btn-danger" style="font-size:11px;padding:4px 10px" onclick="doRemoveLocation('${loc.id}')">刪除</button></div></div>`; });
-  html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:16px"><div style="font-size:14px;font-weight:700;margin-bottom:12px;color:var(--accent)">+ 新增收納位置</div><label style="${labelStyle}">位置名稱</label><input type="text" id="new-loc-name" placeholder="例：客廳沙發櫃" style="${inputStyle}"><label style="${labelStyle}">袋子容量 (ml)</label><input type="number" id="new-loc-size" placeholder="2000" value="5000" style="${inputStyle}"><label style="${labelStyle}">提示詞（告訴 AI 這裡通常放什麼）</label><input type="text" id="new-loc-hints" placeholder="例：遙控器、藥品、日用小物" style="${inputStyle}"><button class="btn-primary" style="margin-top:0" onclick="doAddLocation()">新增</button></div>`;
-  document.getElementById('zones-content').innerHTML = html; showScreen('s-zones');
+  const dimStyle = 'width:64px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:14px;font-family:var(--mono);text-align:center';
+  loadItems().then(function(allItems){
+    let html = `<div style="margin-bottom:16px;font-size:13px;color:var(--muted)">定義家中的收納位置，AI 辨識物品後會建議最適合的位置。<br><span style="color:var(--accent)">目前共 ${LOCATIONS.length} 個收納位置</span></div>`;
+    LOCATIONS.forEach((loc) => {
+      const maxBags = calcMaxBags(loc);
+      const usedBags = countLocBags(loc.id, allItems);
+      const capLine = (maxBags!==null)
+        ? `<div style="font-size:12px;color:${usedBags>maxBags?'var(--red)':'var(--green)'};margin:2px 0 8px;font-family:var(--mono)">📦 最大約 ${maxBags} 袋（柜 ${loc.dimL}×${loc.dimW}×${loc.dimH}cm × 65% ÷ ${loc.bagSizeMl}ml）· 已用 ${usedBags} 袋</div>`
+        : `<div style="font-size:11px;color:var(--dim);margin:2px 0 8px">填入長寬高後可估算最大袋數</div>`;
+      html += `<div id="loc-card-${loc.id}" class="zone-group" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px"><label style="${labelStyle}">位置名稱</label><input type="text" id="edit-name-${loc.id}" value="${loc.name}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><label style="${labelStyle}">袋子容量 (ml) — 目前 ${loc.bagSizeMl >= 1000 ? (loc.bagSizeMl/1000)+'L' : loc.bagSizeMl+'ml'}</label><input type="number" id="edit-size-${loc.id}" value="${loc.bagSizeMl}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><label style="${labelStyle}">櫃體尺寸 長×寬×高 (cm)</label><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="number" id="edit-dimL-${loc.id}" value="${loc.dimL||''}" placeholder="長" style="${dimStyle}" onchange="markLocChanged('${loc.id}')"><span style="color:var(--muted)">×</span><input type="number" id="edit-dimW-${loc.id}" value="${loc.dimW||''}" placeholder="寬" style="${dimStyle}" onchange="markLocChanged('${loc.id}')"><span style="color:var(--muted)">×</span><input type="number" id="edit-dimH-${loc.id}" value="${loc.dimH||''}" placeholder="高" style="${dimStyle}" onchange="markLocChanged('${loc.id}')"></div>${capLine}<label style="${labelStyle}">提示詞</label><input type="text" id="edit-hints-${loc.id}" value="${loc.hints}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><div style="display:flex;gap:8px;margin-top:4px"><button id="save-btn-${loc.id}" class="btn-sm" style="display:none;background:var(--accent-bg);border-color:var(--accent);color:var(--accent)" onclick="doSaveLocation('${loc.id}')">儲存變更</button><button class="btn-danger" style="font-size:11px;padding:4px 10px" onclick="doRemoveLocation('${loc.id}')">刪除</button></div></div>`;
+    });
+    html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:16px"><div style="font-size:14px;font-weight:700;margin-bottom:12px;color:var(--accent)">+ 新增收納位置</div><label style="${labelStyle}">位置名稱</label><input type="text" id="new-loc-name" placeholder="例：客廳沙發櫃" style="${inputStyle}"><label style="${labelStyle}">袋子容量 (ml)</label><input type="number" id="new-loc-size" placeholder="2000" value="5000" style="${inputStyle}"><label style="${labelStyle}">櫃體尺寸 長×寬×高 (cm，可留空)</label><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="number" id="new-loc-dimL" placeholder="長" style="${dimStyle}"><span style="color:var(--muted)">×</span><input type="number" id="new-loc-dimW" placeholder="寬" style="${dimStyle}"><span style="color:var(--muted)">×</span><input type="number" id="new-loc-dimH" placeholder="高" style="${dimStyle}"></div><label style="${labelStyle}">提示詞（告訴 AI 這裡通常放什麼）</label><input type="text" id="new-loc-hints" placeholder="例：遙控器、藥品、日用小物" style="${inputStyle}"><button class="btn-primary" style="margin-top:0" onclick="doAddLocation()">新增</button></div>`;
+    document.getElementById('zones-content').innerHTML = html; showScreen('s-zones');
+  });
 }
 function markLocChanged(id) { const btn = document.getElementById('save-btn-' + id); if (btn) btn.style.display = 'inline-block'; }
 async function doSaveLocation(id) {
   const loc = LOCATIONS.find(l => l.id === id); if (!loc) return;
   const newName = document.getElementById('edit-name-' + id).value.trim(), newSize = parseInt(document.getElementById('edit-size-' + id).value) || loc.bagSizeMl, newHints = document.getElementById('edit-hints-' + id).value.trim();
   if (!newName) { alert('位置名稱不能為空'); return; }
-  const oldName = loc.name; loc.name = newName; loc.bagSizeMl = newSize; loc.hints = newHints; saveLocations();
+  const oldName = loc.name; loc.name = newName; loc.bagSizeMl = newSize; loc.hints = newHints;
+  loc.dimL = parseFloat(document.getElementById('edit-dimL-' + id).value) || 0;
+  loc.dimW = parseFloat(document.getElementById('edit-dimW-' + id).value) || 0;
+  loc.dimH = parseFloat(document.getElementById('edit-dimH-' + id).value) || 0;
+  saveLocations();
   if (oldName !== newName) {
     const items = JSON.parse(localStorage.getItem(ITEMS_KEY) || '[]'); let updated = 0;
     items.forEach(item => { if (item.locationId === id) { item.locationName = newName; updated++; } });
@@ -1077,7 +1109,8 @@ async function doSaveLocation(id) {
 }
 function doAddLocation() {
   const name = document.getElementById('new-loc-name').value.trim(), size = parseInt(document.getElementById('new-loc-size').value) || 5000, hints = document.getElementById('new-loc-hints').value.trim();
-  if (!name) { alert('請輸入位置名稱'); return; } addLocation(name, size, hints); showToast('已新增：' + name); openLocations();
+  const dims = { l: parseFloat(document.getElementById('new-loc-dimL').value) || 0, w: parseFloat(document.getElementById('new-loc-dimW').value) || 0, h: parseFloat(document.getElementById('new-loc-dimH').value) || 0 };
+  if (!name) { alert('請輸入位置名稱'); return; } addLocation(name, size, hints, dims); showToast('已新增：' + name); openLocations();
 }
 function doRemoveLocation(id) {
   const loc = LOCATIONS.find(l => l.id === id); if (!loc) return; if (!confirm(`確定要刪除「${loc.name}」嗎？已建檔的物品不會被刪除。`)) return;
