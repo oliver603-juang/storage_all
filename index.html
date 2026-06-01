@@ -208,7 +208,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <div class="main-content">
   <div class="scan-section">
     <input type="file" id="file-input" accept="image/*" multiple style="display:none" onchange="handleBatchCapture(event)">
-    <input type="file" id="lens-input" accept="image/*" multiple style="display:none" onchange="handleBatchLens(event)">
     <input type="file" id="sv-visual-pick" accept="image/*" style="display:none">
     <button class="scan-btn" onclick="document.getElementById('file-input').click()">
       <div class="scan-icon">⬡</div>
@@ -216,20 +215,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
       <span class="scan-sub">相機或相簿 · 可多選</span>
     </button>
     <div style="display:flex;gap:8px;margin-top:10px">
-      <button class="btn-sm" style="flex:1" onclick="document.getElementById('lens-input').click()">📸 Lens 截圖建檔</button>
-      <button class="btn-sm" style="flex:1;background:var(--accent-bg);border-color:var(--accent);color:var(--accent);font-weight:700" onclick="runStorageVisualMatch()">🧠 視覺比對</button>
-    </div>
-    <div style="margin-top:12px">
-      <div style="display:flex;gap:8px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0 12px">
-        <span style="font-size:15px;color:var(--muted)">🔍</span>
-        <input type="text" id="product-name-input" placeholder="貼上商品名稱（從 Google Lens 複製）…"
-          style="flex:1;background:none;border:none;color:var(--text);padding:12px 0;font-size:14px;outline:none;font-family:var(--sans)">
-        <button onclick="handleProductNameInput()" style="background:var(--accent);color:#0d0d0d;border:none;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer">建檔</button>
-      </div>
-      <div style="font-size:11px;color:var(--dim);margin-top:4px;padding:0 4px">輸入商品名稱後系統會自動查詢規格並建立標籤</div>
+      <button class="btn-sm" style="flex:1;background:var(--accent-bg);border-color:var(--accent);color:var(--accent);font-weight:700" onclick="runStorageVisualMatch()">🧠 視覺比對（找物）</button>
     </div>
   </div></div>
   </div>
+
   <div class="search-section">
     <div class="search-bar">
       <span class="search-icon">⌕</span>
@@ -583,18 +573,18 @@ async function handleBatchCapture(event) {
   const files = Array.from(event.target.files || []); event.target.value = ''; if (!files.length) return;
   if (files.length === 1) {
     const reader = new FileReader();
-    reader.onload = async (e) => { currentImageData = await resizeImage(e.target.result, 1024); await identifyItem(currentImageData); };
+    reader.onload = async (e) => {
+      currentImageData = await resizeImage(e.target.result, 1024);
+      showScreen('s-processing'); setProcessingMsg('AI 辨識中...');
+      try {
+        const result = await identifyWithGemini(currentImageData);
+        if (!result) { showScreen('s-main'); showToast('辨識失敗，請重拍', 'error'); return; }
+        await processIdentifiedItem(result);
+      } catch (err) { showScreen('s-main'); showToast('辨識失敗：' + err.message, 'error'); }
+    };
     reader.readAsDataURL(files[0]); return;
   }
   await startBatch(files, 'photo');
-}
-
-async function handleBatchLens(event) {
-  const files = Array.from(event.target.files || []); event.target.value = ''; if (!files.length) return;
-  if (files.length === 1) {
-    const reader = new FileReader(); reader.onload = async (e) => { await parseLensScreenshot(e.target.result); }; reader.readAsDataURL(files[0]); return;
-  }
-  await startBatch(files, 'lens');
 }
 
 async function startBatch(files, mode) {
@@ -618,22 +608,9 @@ async function startBatch(files, mode) {
       let result;
       const fullDataUrl = await new Promise(resolve => { const reader = new FileReader(); reader.onload = e => resolve(e.target.result); reader.readAsDataURL(item.file); });
 
-      if (item.mode === 'lens') {
-        const { productThumb } = await cropLensScreenshot(fullDataUrl);
-        item.dataUrl = productThumb;
-        const base64Full = fullDataUrl.split(',')[1];
-        const resizedUrl = await resizeImage(fullDataUrl, 800);
-        const base64Resized = resizedUrl.split(',')[1];
-        const locList = getLocationPromptList();
-        const combinedPrompt = `讀取 Google Lens 截圖商品資訊，回應純 JSON：{"name":"商品全名含品牌型號顏色","name_en":"English","brand":"品牌","description":"30字內","keywords":["8個關鍵字"],"feature_tags":["3~5個標籤"],"suggested_location":"從:\n${locList}選一個","estimate_volume_ml":100}`;
-        const textResp = await callGeminiAPI(combinedPrompt, base64Resized);
-        result = safeParseJSON(textResp);
-        result._useThumb = item.dataUrl;
-      } else {
-        const imageData = await resizeImage(fullDataUrl, 1024);
-        item.dataUrl = imageData;
-        result = await identifyWithGemini(imageData);
-      }
+      const imageData = await resizeImage(fullDataUrl, 1024);
+      item.dataUrl = imageData;
+      result = await identifyWithGemini(imageData);
 
       const allItems = await loadItems();
       const loc = LOCATIONS.find(l => l.name === (result.suggested_location || '')) || LOCATIONS[0];
@@ -675,89 +652,7 @@ function renderBatchList() {
 // ══════════════════════════════════════════════
 // GOOGLE LENS SCREENSHOT MODE
 // ══════════════════════════════════════════════
-// [v1.2] removed: handleLensScreenshot (dead code)
 
-async function parseLensScreenshot(fullDataUrl) {
-  showScreen('s-processing'); setProcessingMsg('解析截圖...');
-  try {
-    const _t0 = performance.now();
-    const { productThumb } = await cropLensScreenshot(fullDataUrl);
-    currentImageData = productThumb;
-
-    // 優化: 壓縮截圖 800px + 精簡 prompt + 單次 API
-    setProcessingMsg('壓縮圖片...');
-    const resizedUrl = await resizeImage(fullDataUrl, 800);
-    const base64 = resizedUrl.split(',')[1];
-    console.log('[TIMING] 圖片壓縮: ' + Math.round(performance.now()-_t0) + 'ms, ' + Math.round(base64.length/1024) + 'KB');
-
-    const locList = getLocationPromptList();
-    const existingList = await buildExistingItemsList();
-    const prompt = `讀取截圖中商品,純JSON:{"name":"全名含品牌型號色","name_en":"EN","brand":"牌","description":"30字","keywords":["8詞"],"feature_tags":["3~5個,限選:書寫,筆類,辦公,充電,USB,電源,電池,音頻,耳機,藍牙,無線,3C,數位,切割,刀具,鍋具,餐具,烹飪,清潔,收納,照明,工具,五金,測量,手工,護理,戶外,運動,衣物,包袋,廚房電器,咖啡用品,飲品,食材,調味,保鮮,手機配件,電腦配件,相機,儲存,醫藥,護理,園藝,汽車"],"suggested_location":"從:${locList}選","estimate_volume_ml":數字,"matched_existing_id":"同物品填id否null。已有:${existingList}"}`;
-
-    setProcessingMsg('AI 辨識中...');
-    const _t2 = performance.now();
-    const textResp = await callGeminiAPI(prompt, base64);
-    console.log('[TIMING] Gemini API: ' + Math.round(performance.now()-_t2) + 'ms');
-
-    const item = safeParseJSON(textResp);
-    item._useThumb = productThumb;
-
-    const _elapsed = Math.round(performance.now() - _t0);
-    console.log('[TIMING] Lens total: ' + _elapsed + 'ms');
-    setProcessingMsg('完成！' + (_elapsed/1000).toFixed(1) + 's');
-    await processIdentifiedItem(item);
-  } catch(err) {
-    showScreen('s-main'); showToast('截圖解析失敗：' + err.message, 'error');
-  }
-}
-
-async function cropLensScreenshot(dataUrl) {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      const W = img.width, H = img.height;
-      const sc = document.createElement('canvas'); sc.width = W; sc.height = H;
-      const ctx = sc.getContext('2d'); ctx.drawImage(img, 0, 0);
-
-      const centerData = ctx.getImageData(Math.floor(W * 0.3), Math.floor(H * 0.2), Math.floor(W * 0.4), Math.floor(H * 0.2));
-      let lumaSum = 0; for (let i = 0; i < centerData.data.length; i += 4) lumaSum += 0.299 * centerData.data[i] + 0.587 * centerData.data[i+1] + 0.114 * centerData.data[i+2];
-      const avgLuma = lumaSum / (centerData.data.length / 4);
-
-      let cropX, cropY, cropW, cropH; const tc = document.createElement('canvas');
-      if (avgLuma < 60) {
-        cropX = Math.floor(W * 0.60); cropY = Math.floor(H * 0.10); cropW = Math.floor(W * 0.38); cropH = Math.floor(H * 0.25);
-      } else {
-        cropX = Math.floor(W * 0.15); cropY = Math.floor(H * 0.15); cropW = Math.floor(W * 0.70); cropH = Math.floor(H * 0.45);
-      }
-      tc.width = cropW; tc.height = cropH; tc.getContext('2d').drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-      resolve({ productThumb: tc.toDataURL('image/jpeg', 0.90), layoutType: avgLuma < 60 ? 'ai-mode' : 'viewfinder' });
-    };
-    img.src = dataUrl;
-  });
-}
-
-// ══════════════════════════════════════════════
-// PRODUCT NAME TEXT INPUT MODE
-// ══════════════════════════════════════════════
-async function handleProductNameInput() {
-  const input = document.getElementById('product-name-input'), name = input.value.trim();
-  if (!name) { input.focus(); return; } input.value = ''; currentImageData = null;
-  showScreen('s-processing'); setProcessingMsg(`查詢「${name}」商品資訊...`);
-  try {
-    const item = await buildItemFromProductName(name, { product_name: name });
-    await processIdentifiedItem(item);
-  } catch(err) { showScreen('s-main'); showToast('查詢失敗：' + err.message, 'error'); }
-}
-
-async function buildItemFromProductName(productName, hints={}, imageDataUrl=null) {
-  const locList = getLocationPromptList(), hasImage = !!imageDataUrl;
-  const existingList = await buildExistingItemsList();
-  const prompt = `請根據你對「${productName}」這個商品的知識，提供詳細的商品資訊。\n${hasImage ? '附圖是該物品的實際照片，請從圖片判斷顏色/款式。' : ''}\n家中有以下收納位置：\n${locList}\n${existingList}\n回應純 JSON（不含其他文字）：\n{"name": "完整商品名稱","name_en": "English name","brand": "品牌","description": "主要規格與特色，50字內","keywords": ["8~12個搜尋關鍵字"],"feature_tags": ["書寫,筆類,3C...等"],"suggested_location": "建議的收納位置名稱","estimate_volume_ml": 100,
-"matched_existing_id": "如果新物品與已建檔清單中某物品是同一件實體商品（品牌型號相同、只是名稱寫法或顏色描述不同），填入該物品的 id（如 item_xxx）。完全不同的物品填 null"}`;
-  const base64 = hasImage ? imageDataUrl.split(',')[1] : null;
-  const textResp = await callGeminiAPI(prompt, base64);
-  return safeParseJSON(textResp);
-}
 
 // [v1.2] removed: identifyItem (wrapper, now handleBatchCapture calls identifyWithGemini directly)
 
