@@ -765,6 +765,51 @@ async function processIdentifiedItem(item) {
   qtyRow.innerHTML = `<span style="font-size:13px;color:var(--muted)">數量</span><button onclick="adjustQty(-1)" style="width:30px;height:30px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:16px;cursor:pointer">−</button><span id="qty-display" style="font-family:var(--mono);font-size:18px;font-weight:700;min-width:28px;text-align:center">1</span><button onclick="adjustQty(1)" style="width:30px;height:30px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:16px;cursor:pointer">+</button><span id="qty-total-vol" style="font-size:12px;color:var(--muted);margin-left:auto;font-family:var(--mono)">= ${volLabel}</span>`;
   kw.appendChild(qtyRow);
 
+  // [方案3] 可手動覆寫尺寸/體積：預填 AI 估值，使用者想改才改
+  const sizeRow = document.createElement('div');
+  sizeRow.style.cssText = 'margin-top:8px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px';
+  sizeRow.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:13px;color:var(--muted)">單件體積</span>
+      <input id="size-vol-input" type="number" inputmode="numeric" value="${volMl}" min="1"
+        style="width:84px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:14px;font-family:var(--mono);text-align:right"> 
+      <span style="font-size:12px;color:var(--muted)">ml</span>
+      <span style="font-size:11px;color:var(--accent);margin-left:auto">AI 估</span>
+      <button id="size-vol-apply" style="background:var(--accent);color:#0d0d0d;border:none;padding:5px 10px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">套用</button>
+    </div>
+    <div style="margin-top:8px">
+      <button id="size-lwh-toggle" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;padding:0">📐 用長×寬×高(cm)算體積</button>
+      <div id="size-lwh-box" style="display:none;align-items:center;gap:6px;margin-top:6px">
+        <input id="size-l" type="number" inputmode="decimal" placeholder="長" min="0" style="width:54px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px;font-size:13px;font-family:var(--mono);text-align:center">
+        <span style="color:var(--muted)">×</span>
+        <input id="size-w" type="number" inputmode="decimal" placeholder="寬" min="0" style="width:54px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px;font-size:13px;font-family:var(--mono);text-align:center">
+        <span style="color:var(--muted)">×</span>
+        <input id="size-h" type="number" inputmode="decimal" placeholder="高" min="0" style="width:54px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px;font-size:13px;font-family:var(--mono);text-align:center">
+        <span style="font-size:11px;color:var(--muted)">cm</span>
+        <button id="size-lwh-apply" style="background:var(--accent);color:#0d0d0d;border:none;padding:5px 10px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;margin-left:auto">換算並套用</button>
+      </div>
+    </div>`;
+  kw.appendChild(sizeRow);
+  // 綁定事件（用 addEventListener 避免內嵌引號問題）
+  sizeRow.querySelector('#size-vol-apply').addEventListener('click', function(){
+    const v = parseInt(document.getElementById('size-vol-input').value);
+    if (v && v > 0) applySizeOverride(v, true);
+  });
+  sizeRow.querySelector('#size-lwh-toggle').addEventListener('click', function(){
+    const box = document.getElementById('size-lwh-box');
+    box.style.display = (box.style.display === 'none' || !box.style.display) ? 'flex' : 'none';
+  });
+  sizeRow.querySelector('#size-lwh-apply').addEventListener('click', function(){
+    const l = parseFloat(document.getElementById('size-l').value) || 0;
+    const w = parseFloat(document.getElementById('size-w').value) || 0;
+    const h = parseFloat(document.getElementById('size-h').value) || 0;
+    if (l > 0 && w > 0 && h > 0) {
+      const ml = Math.round(l * w * h); // 1cm³ = 1ml
+      document.getElementById('size-vol-input').value = ml;
+      applySizeOverride(ml, false, {l, w, h});
+    } else { showToast('請輸入三邊長度', 'error'); }
+  });
+
   if (item.keywords?.length) { const kwDiv = document.createElement('div'); kwDiv.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-top:8px'; (item.keywords || []).forEach(k => { const s = document.createElement('span'); s.className = 'keyword-tag'; s.textContent = k; kwDiv.appendChild(s); }); kw.appendChild(kwDiv); }
 
   const banner = document.getElementById('match-banner');
@@ -801,6 +846,30 @@ function adjustQty(delta) {
     pendingItem.locationId = bagInfo.locationId; pendingItem.locationName = bagInfo.locationName; pendingItem.bagNum = bagInfo.bagNum;
     document.getElementById('result-zonename').textContent = bagInfo.locationName; document.getElementById('result-bag').textContent = '#' + bagInfo.bagNum;
   });
+}
+
+// [方案3] 手動覆寫單件體積（直接 ml 或由長寬高換算）→ 更新體積、重算袋號
+function applySizeOverride(volMl, viaDirect, dims) {
+  if (!pendingItem || !volMl || volMl <= 0) return;
+  pendingItem.estimateVolumeMl = volMl;
+  pendingItem.manualVolume = true;                 // 標記為手動值，圖對圖粗篩仍可用
+  if (dims) { pendingItem.dimL = dims.l; pendingItem.dimW = dims.w; pendingItem.dimH = dims.h; }
+  // 更新「單件 ≈」徽章 與 數量總體積
+  const single = volMl >= 1000 ? (volMl/1000).toFixed(1)+'L' : volMl+'ml';
+  const badge = Array.from(document.querySelectorAll('#result-keywords .keyword-tag')).find(function(s){return (s.textContent||'').indexOf('單件 ≈')>=0;});
+  if (badge) badge.textContent = '單件 ≈ ' + single;
+  const totalVol = volMl * (pendingItem.quantity || 1);
+  const qtv = document.getElementById('qty-total-vol'); if (qtv) qtv.textContent = '= ' + (totalVol >= 1000 ? (totalVol/1000).toFixed(1)+'L' : totalVol+'ml');
+  // 改「AI 估」標記為「已調整」
+  const tag = document.querySelector('#size-vol-input') && document.querySelector('#size-vol-input').parentElement.querySelector('span[style*="margin-left:auto"]');
+  if (tag) { tag.textContent = '已調整'; tag.style.color = 'var(--green)'; }
+  // 體積變了 → 重新分配袋號（袋滿開新袋，與 adjustQty 同邏輯）
+  loadItems().then(function(allItems){
+    const bagInfo = assignBag(pendingItem.locationId, pendingItem.featureTags || [], totalVol, allItems);
+    pendingItem.locationId = bagInfo.locationId; pendingItem.locationName = bagInfo.locationName; pendingItem.bagNum = bagInfo.bagNum;
+    document.getElementById('result-zonename').textContent = bagInfo.locationName; document.getElementById('result-bag').textContent = '#' + bagInfo.bagNum;
+  });
+  showToast('已套用體積 ' + single + (dims ? '（' + dims.l + '×' + dims.w + '×' + dims.h + 'cm）' : ''));
 }
 
 function chooseDuplicateAction(action) {
@@ -840,7 +909,7 @@ async function confirmItem() {
   if (!pendingItem) return;
   showScreen('s-processing'); setProcessingMsg('儲存中...');
   try {
-    const now = Date.now(), item = { name: pendingItem.name, name_en: pendingItem.name_en || '', locationId: pendingItem.locationId, locationName: pendingItem.locationName, bagNum: pendingItem.bagNum, estimateVolumeMl:pendingItem.estimateVolumeMl || 100, quantity: pendingItem.quantity || 1, featureTags: pendingItem.featureTags || [], description: pendingItem.description || '', keywords: pendingItem.keywords || [], imageData: pendingItem._useThumb || pendingItem.imageData || '', updatedAt: now };
+    const now = Date.now(), item = { name: pendingItem.name, name_en: pendingItem.name_en || '', locationId: pendingItem.locationId, locationName: pendingItem.locationName, bagNum: pendingItem.bagNum, estimateVolumeMl:pendingItem.estimateVolumeMl || 100, manualVolume: !!pendingItem.manualVolume, dimL: pendingItem.dimL || 0, dimW: pendingItem.dimW || 0, dimH: pendingItem.dimH || 0, quantity: pendingItem.quantity || 1, featureTags: pendingItem.featureTags || [], description: pendingItem.description || '', keywords: pendingItem.keywords || [], imageData: pendingItem._useThumb || pendingItem.imageData || '', updatedAt: now };
     if (pendingItem.isUpdate && pendingItem.matchedId) {
       item.id = pendingItem.matchedId; item.createdAt = pendingItem._matchRef?.createdAt || pendingItem.createdAt || now;
       if (pendingItem._matchRef?.imageData && !item.imageData) item.imageData = pendingItem._matchRef.imageData;
