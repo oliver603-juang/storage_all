@@ -487,13 +487,41 @@ function assignBag(locationId, featureTags, totalVolumeMl, allItems) {
       return { locationId, locationName: loc.name, bagNum: num };
     }
   }
-  const maxBag = bagNums.length ? Math.max(...bagNums) : 0;
-  return { locationId, locationName: loc.name, bagNum: maxBag + 1 };
+
+  // [利用率] 袋號是否用完：已用袋數 ≥ 最大可放袋數（須有填櫃體尺寸才有上限）
+  const maxBags = calcMaxBags(loc);
+  const usedBags = bagNums.length;
+  const capReached = (maxBags !== null && usedBags >= maxBags);
+
+  if (!capReached) {
+    // 袋號還沒用完 → 維持原邏輯：開新袋（同類聚集優先，前面已試過併袋）
+    const maxBag = Math.max(...bagNums);
+    return { locationId, locationName: loc.name, bagNum: maxBag + 1 };
+  }
+
+  // 袋號用完 → 放寬同類限制：找「任何塞得下」的現有袋，從最空的開始塞
+  let best = null;
+  bagNums.forEach(num => {
+    const remain = loc.bagSizeMl - bags[num].usedMl;
+    if (remain >= totalVolumeMl && (best === null || remain > best.remain)) best = { num, remain };
+  });
+  if (best) return { locationId, locationName: loc.name, bagNum: best.num, relaxed: true };
+
+  // 袋號用完且全部塞不下 → 交給上層決定（硬開新袋 / 封存此位置）
+  return { locationId, locationName: loc.name, bagNum: Math.max(...bagNums) + 1, needDecision: true, maxBags, usedBags };
 }
 
 function getLocationPromptList() {
-  return LOCATIONS.map(l => `"${l.name}"（${l.bagSizeMl >= 1000 ? (l.bagSizeMl/1000)+'L' : l.bagSizeMl+'ml'}袋，適合放：${l.hints}）`).join('\n');
+  return LOCATIONS.filter(l => !l.archived).map(l => `"${l.name}"（${l.bagSizeMl >= 1000 ? (l.bagSizeMl/1000)+'L' : l.bagSizeMl+'ml'}袋，適合放：${l.hints}）`).join('\n');
 }
+// 封存位置：之後不再新建收納（AI 不建議、分配跳過），只能查詢；可解除
+function setLocationArchived(id, archived) {
+  const loc = LOCATIONS.find(l => l.id === id); if (!loc) return;
+  loc.archived = !!archived; saveLocations();
+  showToast(archived ? ('🔒 已封存「'+loc.name+'」：只能查詢，不再新建') : ('🔓 已解除封存「'+loc.name+'」'));
+}
+// 取第一個未封存的位置（fallback 用）
+function firstActiveLocation() { return LOCATIONS.find(l => !l.archived) || LOCATIONS[0]; }
 
 let cfg = {}; let db = null; let pendingItem = null; let currentImageData = null;
 
@@ -765,8 +793,23 @@ async function processIdentifiedItem(item) {
   if (match) {
     bagInfo = { locationId: match.locationId, locationName: match.locationName, bagNum: match.bagNum };
   } else {
-    const loc = LOCATIONS.find(l => l.name === (item.suggested_location || '')) || LOCATIONS[0];
+    let loc = LOCATIONS.find(l => l.name === (item.suggested_location || '') && !l.archived) || firstActiveLocation();
     bagInfo = assignBag(loc.id, featureTags, volMl * qty, allItems);
+    // [利用率] 袋號用完且塞不下 → 詢問：硬開新袋 / 封存此位置
+    if (bagInfo.needDecision) {
+      const goNew = confirm(
+        `⚠ 「${loc.name}」已達建議上限（${bagInfo.usedBags}/${bagInfo.maxBags} 袋，65% 空間），且現有袋都塞不下這件。\n\n` +
+        `「確定」＝硬開新袋 #${bagInfo.bagNum}（超出建議但繼續用）\n` +
+        `「取消」＝封存此位置（之後只能查詢、不再新建，請改放其他位置）`
+      );
+      if (!goNew) {
+        setLocationArchived(loc.id, true);
+        // 改分配到其他未封存位置
+        const alt = firstActiveLocation();
+        if (alt && alt.id !== loc.id) { loc = alt; bagInfo = assignBag(alt.id, featureTags, volMl * qty, allItems); }
+        else { showToast('⚠ 已無可用位置，請先到「收納位置」新增或解除封存', 'error'); }
+      }
+    }
   }
 
   pendingItem = { ...item, ...bagInfo, featureTags, estimateVolumeMl: volMl, quantity: qty, imageData: currentImageData, isUpdate: !!match, matchedId: match ? match.id : null };
@@ -1080,16 +1123,18 @@ function openLocations() {
     LOCATIONS.forEach((loc) => {
       const maxBags = calcMaxBags(loc);
       const usedBags = countLocBags(loc.id, allItems);
+      const archBadge = loc.archived ? `<div style="font-size:12px;color:var(--red);margin:2px 0 8px;font-weight:700">🔒 已封存：只能查詢，不再新建收納</div>` : '';
       const capLine = (maxBags!==null)
-        ? `<div style="font-size:12px;color:${usedBags>maxBags?'var(--red)':'var(--green)'};margin:2px 0 8px;font-family:var(--mono)">📦 最大約 ${maxBags} 袋（柜 ${loc.dimL}×${loc.dimW}×${loc.dimH}cm × 65% ÷ ${loc.bagSizeMl}ml）· 已用 ${usedBags} 袋</div>`
-        : `<div style="font-size:11px;color:var(--dim);margin:2px 0 8px">填入長寬高後可估算最大袋數</div>`;
-      html += `<div id="loc-card-${loc.id}" class="zone-group" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px"><label style="${labelStyle}">位置名稱</label><input type="text" id="edit-name-${loc.id}" value="${loc.name}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><label style="${labelStyle}">袋子容量 (ml) — 目前 ${loc.bagSizeMl >= 1000 ? (loc.bagSizeMl/1000)+'L' : loc.bagSizeMl+'ml'}</label><input type="number" id="edit-size-${loc.id}" value="${loc.bagSizeMl}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><label style="${labelStyle}">櫃體尺寸 長×寬×高 (cm)</label><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="number" id="edit-dimL-${loc.id}" value="${loc.dimL||''}" placeholder="長" style="${dimStyle}" onchange="markLocChanged('${loc.id}')"><span style="color:var(--muted)">×</span><input type="number" id="edit-dimW-${loc.id}" value="${loc.dimW||''}" placeholder="寬" style="${dimStyle}" onchange="markLocChanged('${loc.id}')"><span style="color:var(--muted)">×</span><input type="number" id="edit-dimH-${loc.id}" value="${loc.dimH||''}" placeholder="高" style="${dimStyle}" onchange="markLocChanged('${loc.id}')"></div>${capLine}<label style="${labelStyle}">提示詞</label><input type="text" id="edit-hints-${loc.id}" value="${loc.hints}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><div style="display:flex;gap:8px;margin-top:4px"><button id="save-btn-${loc.id}" class="btn-sm" style="display:none;background:var(--accent-bg);border-color:var(--accent);color:var(--accent)" onclick="doSaveLocation('${loc.id}')">儲存變更</button><button class="btn-danger" style="font-size:11px;padding:4px 10px" onclick="doRemoveLocation('${loc.id}')">刪除</button></div></div>`;
+        ? `<div style="font-size:12px;color:${usedBags>maxBags?'var(--red)':'var(--green)'};margin:2px 0 8px;font-family:var(--mono)">📦 最大約 ${maxBags} 袋（柜 ${loc.dimL}×${loc.dimW}×${loc.dimH}cm × 65% ÷ ${loc.bagSizeMl}ml）· 已用 ${usedBags} 袋</div>` + archBadge
+        : `<div style="font-size:11px;color:var(--dim);margin:2px 0 8px">填入長寬高後可估算最大袋數</div>` + archBadge;
+      html += `<div id="loc-card-${loc.id}" class="zone-group" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px"><label style="${labelStyle}">位置名稱</label><input type="text" id="edit-name-${loc.id}" value="${loc.name}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><label style="${labelStyle}">袋子容量 (ml) — 目前 ${loc.bagSizeMl >= 1000 ? (loc.bagSizeMl/1000)+'L' : loc.bagSizeMl+'ml'}</label><input type="number" id="edit-size-${loc.id}" value="${loc.bagSizeMl}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><label style="${labelStyle}">櫃體尺寸 長×寬×高 (cm)</label><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="number" id="edit-dimL-${loc.id}" value="${loc.dimL||''}" placeholder="長" style="${dimStyle}" onchange="markLocChanged('${loc.id}')"><span style="color:var(--muted)">×</span><input type="number" id="edit-dimW-${loc.id}" value="${loc.dimW||''}" placeholder="寬" style="${dimStyle}" onchange="markLocChanged('${loc.id}')"><span style="color:var(--muted)">×</span><input type="number" id="edit-dimH-${loc.id}" value="${loc.dimH||''}" placeholder="高" style="${dimStyle}" onchange="markLocChanged('${loc.id}')"></div>${capLine}<label style="${labelStyle}">提示詞</label><input type="text" id="edit-hints-${loc.id}" value="${loc.hints}" style="${inputStyle}" onchange="markLocChanged('${loc.id}')"><div style="display:flex;gap:8px;margin-top:4px"><button id="save-btn-${loc.id}" class="btn-sm" style="display:none;background:var(--accent-bg);border-color:var(--accent);color:var(--accent)" onclick="doSaveLocation('${loc.id}')">儲存變更</button><button class="btn-sm" style="font-size:11px;padding:4px 10px" onclick="doToggleArchive('${loc.id}')">${loc.archived ? '🔓 解除封存' : '🔒 封存'}</button><button class="btn-danger" style="font-size:11px;padding:4px 10px" onclick="doRemoveLocation('${loc.id}')">刪除</button></div></div>`;
     });
     html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:16px"><div style="font-size:14px;font-weight:700;margin-bottom:12px;color:var(--accent)">+ 新增收納位置</div><label style="${labelStyle}">位置名稱</label><input type="text" id="new-loc-name" placeholder="例：客廳沙發櫃" style="${inputStyle}"><label style="${labelStyle}">袋子容量 (ml)</label><input type="number" id="new-loc-size" placeholder="2000" value="5000" style="${inputStyle}"><label style="${labelStyle}">櫃體尺寸 長×寬×高 (cm，可留空)</label><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="number" id="new-loc-dimL" placeholder="長" style="${dimStyle}"><span style="color:var(--muted)">×</span><input type="number" id="new-loc-dimW" placeholder="寬" style="${dimStyle}"><span style="color:var(--muted)">×</span><input type="number" id="new-loc-dimH" placeholder="高" style="${dimStyle}"></div><label style="${labelStyle}">提示詞（告訴 AI 這裡通常放什麼）</label><input type="text" id="new-loc-hints" placeholder="例：遙控器、藥品、日用小物" style="${inputStyle}"><button class="btn-primary" style="margin-top:0" onclick="doAddLocation()">新增</button></div>`;
     document.getElementById('zones-content').innerHTML = html; showScreen('s-zones');
   });
 }
 function markLocChanged(id) { const btn = document.getElementById('save-btn-' + id); if (btn) btn.style.display = 'inline-block'; }
+function doToggleArchive(id){ const loc=LOCATIONS.find(l=>l.id===id); if(!loc) return; setLocationArchived(id, !loc.archived); openLocations(); }
 async function doSaveLocation(id) {
   const loc = LOCATIONS.find(l => l.id === id); if (!loc) return;
   const newName = document.getElementById('edit-name-' + id).value.trim(), newSize = parseInt(document.getElementById('edit-size-' + id).value) || loc.bagSizeMl, newHints = document.getElementById('edit-hints-' + id).value.trim();
