@@ -203,6 +203,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <div class="header-actions">
     <button class="icon-btn" onclick="openLocations()" title="收納位置">⊞</button>
     <button class="icon-btn" onclick="openInventory()" title="全部物品">☰</button>
+    <button class="icon-btn" onclick="openRouting()" title="分類路由">🗂</button>
     <button class="icon-btn" onclick="showScreen('s-setup')" title="設定">⚙</button>
   </div>
 </div>
@@ -353,6 +354,20 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <div id="zones-content" class="padded"></div>
 </div>
 
+<div id="s-routing" class="screen">
+<div class="header">
+  <button class="back-btn" onclick="showScreen('s-main')">← 返回</button>
+  <span class="header-title">分類路由管理</span>
+</div>
+<div class="padded" style="padding-bottom:80px">
+  <div style="font-size:12px;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:14px;line-height:1.7">
+    <strong style="color:var(--text)">運作規則：</strong>新辨識的物品依「大類」放進主位置；主位置滿了才用備用位置。更改此表只影響「未來」的新物品；既有物品可按卡片下方的「重新路由」搬移。
+  </div>
+  <div id="routing-list-container"></div>
+  <button class="btn-primary" onclick="promptNewCategory()" style="margin-top:8px">+ 新增分類大類</button>
+</div>
+</div>
+
 <div id="toast" class="toast"></div>
 
 <script>
@@ -461,54 +476,105 @@ function removeLocation(id) {
   saveLocations();
 }
 
-function assignBag(locationId, featureTags, totalVolumeMl, allItems) {
-  const loc = LOCATIONS.find(l => l.id === locationId);
-  if (!loc) return { locationId, locationName:'未知', bagNum:1 };
+// ── 分類主位置路由表（單一真理來源）──
+const CATEGORY_ROUTING_KEY = 'storesmart_routing';
+const DEFAULT_CATEGORY_ROUTING = {
+  "文具辦公":   { primaryLocation: "loc_1", fallbackLocations: [] },
+  "3C電子":     { primaryLocation: "loc_1", fallbackLocations: [] },
+  "居家五金":   { primaryLocation: "loc_2", fallbackLocations: [] },
+  "廚房雜貨":   { primaryLocation: "loc_3", fallbackLocations: ["loc_2"] },
+  "休閒嗜好":   { primaryLocation: "loc_1", fallbackLocations: [] },
+  "其他生活雜物": { primaryLocation: "loc_1", fallbackLocations: [] }
+};
+let CATEGORY_ROUTING = {};
+function loadCategoryRouting() {
+  const saved = localStorage.getItem(CATEGORY_ROUTING_KEY);
+  CATEGORY_ROUTING = saved ? JSON.parse(saved) : JSON.parse(JSON.stringify(DEFAULT_CATEGORY_ROUTING));
+  if (!CATEGORY_ROUTING['其他生活雜物']) {
+    CATEGORY_ROUTING['其他生活雜物'] = { primaryLocation: (LOCATIONS[0] && LOCATIONS[0].id) || 'loc_1', fallbackLocations: [] };
+  }
+}
+function saveCategoryRouting() { localStorage.setItem(CATEGORY_ROUTING_KEY, JSON.stringify(CATEGORY_ROUTING)); }
+function getValidCategories() { return Object.keys(CATEGORY_ROUTING).join('、'); }
+function categoryOf(item) {
+  if (item && Array.isArray(item.category_path) && item.category_path.length
+      && CATEGORY_ROUTING[item.category_path[0]]) return item.category_path[0];
+  return '其他生活雜物';
+}
+function routeLocations(category) {
+  const cfg = CATEGORY_ROUTING[category] || CATEGORY_ROUTING['其他生活雜物'] || {};
+  const ids = [cfg.primaryLocation].concat(cfg.fallbackLocations || []);
+  const locs = ids.map(id => LOCATIONS.find(l => l.id === id && !l.archived)).filter(Boolean);
+  if (!locs.length) { const f = firstActiveLocation(); if (f) locs.push(f); }
+  return locs;
+}
 
-  const locItems = allItems.filter(i => i.locationId === locationId);
-  const bags = {};
-  locItems.forEach(i => {
-    const b = i.bagNum || 1;
-    if (!bags[b]) bags[b] = { usedMl: 0, tags: new Set() };
-    bags[b].usedMl += (i.estimateVolumeMl || 0) * (i.quantity || 1);
-    (i.featureTags || []).forEach(t => bags[b].tags.add(t));
-  });
+function assignBag(item, allItems) {
+  const category  = categoryOf(item);
+  const singleVol = parseInt(item.estimateVolumeMl) || 100;
+  const totalVol  = singleVol * (item.quantity || 1);
+  const candidates = routeLocations(category);
 
-  const bagNums = Object.keys(bags).map(Number).sort((a,b) => a-b);
-  if (bagNums.length === 0) return { locationId, locationName: loc.name, bagNum: 1 };
+  for (const loc of candidates) {
+    const locItems = allItems.filter(i => i.locationId === loc.id);
+    const bags = {};
+    locItems.forEach(i => {
+      const b = i.bagNum || 1;
+      if (!bags[b]) bags[b] = { usedMl: 0, items: [] };
+      bags[b].usedMl += (i.estimateVolumeMl || 0) * (i.quantity || 1);
+      bags[b].items.push(i);
+    });
+    const bagNums = Object.keys(bags).map(Number).sort((a, b) => a - b);
 
-  const newTags = new Set((featureTags || []).map(t => t.toLowerCase()));
-  for (let i = bagNums.length - 1; i >= 0; i--) {
-    const num = bagNums[i];
-    const bag = bags[num];
-    const bagTagsLower = new Set([...bag.tags].map(t => t.toLowerCase()));
-    const overlap = [...newTags].filter(t => bagTagsLower.has(t));
-    if (overlap.length > 0 && bag.usedMl + totalVolumeMl <= loc.bagSizeMl) {
-      return { locationId, locationName: loc.name, bagNum: num };
+    let bestBag = null, bestScore = 39;
+    bagNums.forEach(num => {
+      const bag = bags[num];
+      if (bag.usedMl + totalVol > loc.bagSizeMl) return;
+      let score = -1;
+      bag.items.forEach(ex => {
+        let s = 0;
+        if (Array.isArray(ex.category_path) && Array.isArray(item.category_path)) {
+          if (ex.category_path[0] === item.category_path[0] &&
+              ex.category_path[1] === item.category_path[1]) s += 50;
+          else if (ex.category_path[0] === item.category_path[0]) s += 30;
+        } else {
+          const exT = (ex.featureTags || []).map(t => t.toLowerCase());
+          const itT = (item.featureTags || []).map(t => t.toLowerCase());
+          if (itT.some(t => exT.includes(t))) s += 20;
+        }
+        if (ex.item_core_type && ex.item_core_type === item.item_core_type) s += 20;
+        const a = ex.estimateVolumeMl || 1, b = singleVol;
+        if (Math.max(a, b) / (Math.min(a, b) || 1) > 10) s -= 100;
+        if (s > score) score = s;
+      });
+      if (score > bestScore) { bestScore = score; bestBag = num; }
+    });
+    if (bestBag !== null) {
+      return { locationId: loc.id, locationName: loc.name, bagNum: bestBag, score: bestScore };
     }
+
+    const maxBags = calcMaxBags(loc);
+    const capReached = (maxBags !== null && bagNums.length >= maxBags);
+    if (!capReached) {
+      const newNum = bagNums.length ? Math.max(...bagNums) + 1 : 1;
+      return { locationId: loc.id, locationName: loc.name, bagNum: newNum };
+    }
+
+    let fit = null;
+    bagNums.forEach(num => {
+      const r = loc.bagSizeMl - bags[num].usedMl;
+      if (r >= totalVol && (fit === null || r > fit.r)) fit = { num, r };
+    });
+    if (fit) return { locationId: loc.id, locationName: loc.name, bagNum: fit.num, relaxed: true };
   }
 
-  // [利用率] 袋號是否用完：已用袋數 ≥ 最大可放袋數（須有填櫃體尺寸才有上限）
-  const maxBags = calcMaxBags(loc);
-  const usedBags = bagNums.length;
-  const capReached = (maxBags !== null && usedBags >= maxBags);
-
-  if (!capReached) {
-    // 袋號還沒用完 → 維持原邏輯：開新袋（同類聚集優先，前面已試過併袋）
-    const maxBag = Math.max(...bagNums);
-    return { locationId, locationName: loc.name, bagNum: maxBag + 1 };
-  }
-
-  // 袋號用完 → 放寬同類限制：找「任何塞得下」的現有袋，從最空的開始塞
-  let best = null;
-  bagNums.forEach(num => {
-    const remain = loc.bagSizeMl - bags[num].usedMl;
-    if (remain >= totalVolumeMl && (best === null || remain > best.remain)) best = { num, remain };
-  });
-  if (best) return { locationId, locationName: loc.name, bagNum: best.num, relaxed: true };
-
-  // 袋號用完且全部塞不下 → 交給上層決定（硬開新袋 / 封存此位置）
-  return { locationId, locationName: loc.name, bagNum: Math.max(...bagNums) + 1, needDecision: true, maxBags, usedBags };
+  const primary = candidates[0] || firstActiveLocation();
+  const bn = allItems.filter(i => i.locationId === primary.id).map(i => i.bagNum || 1);
+  return {
+    locationId: primary.id, locationName: primary.name,
+    bagNum: bn.length ? Math.max(...bn) + 1 : 1,
+    needDecision: true, category
+  };
 }
 
 function getLocationPromptList() {
@@ -537,6 +603,7 @@ function init() {
 
 function _init() {
   loadLocations();
+  loadCategoryRouting();
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved) {
     cfg = JSON.parse(saved);
@@ -659,11 +726,10 @@ async function startBatch(files, mode) {
       result = await identifyWithGemini(imageData);
 
       const allItems = await loadItems();
-      const loc = LOCATIONS.find(l => l.name === (result.suggested_location || '')) || LOCATIONS[0];
       const volMl = parseInt(result.estimate_volume_ml) || 100, featureTags = result.feature_tags || [];
-      const bagInfo = assignBag(loc.id, featureTags, volMl, allItems);
+      const bagInfo = assignBag({ category_path: result.category_path, item_core_type: result.item_core_type, estimateVolumeMl: volMl, quantity: 1, featureTags }, allItems);
       const now = Date.now();
-      const savedItem = { name: result.name, name_en: result.name_en || '', locationId: bagInfo.locationId, locationName: bagInfo.locationName, bagNum: bagInfo.bagNum, estimateVolumeMl:volMl, quantity: 1, featureTags: featureTags, description: result.description || '', keywords: result.keywords || [], id: 'item_' + now + '_' + Math.random().toString(36).slice(2,5), createdAt: now, updatedAt: now, imageData: result._useThumb || item.dataUrl || '' };
+      const savedItem = { name: result.name, name_en: result.name_en || '', locationId: bagInfo.locationId, locationName: bagInfo.locationName, bagNum: bagInfo.bagNum, estimateVolumeMl:volMl, quantity: 1, featureTags: featureTags, category_path: result.category_path || [], item_core_type: result.item_core_type || '', description: result.description || '', keywords: result.keywords || [], id: 'item_' + now + '_' + Math.random().toString(36).slice(2,5), createdAt: now, updatedAt: now, imageData: result._useThumb || item.dataUrl || '' };
       await saveItem(savedItem);
 
       item.result = savedItem; item.status = 'done'; done++;
@@ -716,6 +782,8 @@ function safeParseJSON(text) {
     keywords: extractArr('keywords'), feature_tags: extractArr('feature_tags'), key_features: extractArr('key_features'), suggested_location: extract('suggested_location') || '',
     estimate_volume_ml: parseInt(extract('estimate_volume_ml')) || 100, confidence: extract('confidence') || 'medium',
     matched_existing_id: extract('matched_existing_id') || null,
+    category_path: extractArr('category_path'),
+    item_core_type: extract('item_core_type') || '',
   };
 }
 
@@ -739,9 +807,15 @@ async function buildExistingItemsList() {
 }
 
 function buildPrompt(existingList) {
-  const locList = getLocationPromptList();
-  return `你是智慧收納系統的物品辨識模組。請辨識圖片中的物品。\n家中有以下收納位置：\n${locList}\n${existingList || ""}\n請根據物品特性，建議最適合的收納位置，並估算物品的收納體積。回應純 JSON 格式（不要有任何其他文字）：\n{"name": "完整商品中文名稱","name_en": "English product name","brand": "品牌名稱","description": "30字內描述","keywords": ["關鍵字1"],"feature_tags": ["書寫"],"suggested_location": "位置名稱","estimate_volume_ml": 100,
-"matched_existing_id": "如果新物品與已建檔清單中某物品是同一件實體商品（品牌型號相同、只是名稱寫法或顏色描述不同），填入該物品的 id（如 item_xxx）。完全不同的物品填 null"}`;
+  const validCategories = getValidCategories();
+  return `你是智慧收納系統的物品辨識模組。請辨識圖片中的物品。
+${existingList || ""}
+【強制分類規則】你必須把此物品歸到一個階層路徑（大類 > 中類 > 小類）。
+其中「大類」必須且只能從以下清單選一個：[${validCategories}]。
+若無法明確歸類，請選「其他生活雜物」，不要自創新的大類。
+
+請回應純 JSON（不要任何其他文字）：
+{"name":"完整商品中文名稱","name_en":"English name","brand":"品牌","item_core_type":"核心物品名稱（如：十字螺絲起子）","category_path":["大類","中類","小類"],"description":"30字內描述","keywords":["關鍵字1"],"feature_tags":["特徵1"],"estimate_volume_ml":100,"matched_existing_id":"若與清單中某件是同一實體商品就填其 id（如 item_xxx），否則 null"}`;
 }
 
 async function identifyWithGemini(imageData) {
@@ -793,21 +867,19 @@ async function processIdentifiedItem(item) {
   if (match) {
     bagInfo = { locationId: match.locationId, locationName: match.locationName, bagNum: match.bagNum };
   } else {
-    let loc = LOCATIONS.find(l => l.name === (item.suggested_location || '') && !l.archived) || firstActiveLocation();
-    bagInfo = assignBag(loc.id, featureTags, volMl * qty, allItems);
-    // [利用率] 袋號用完且塞不下 → 詢問：硬開新袋 / 封存此位置
+    bagInfo = assignBag({ category_path: item.category_path, item_core_type: item.item_core_type, estimateVolumeMl: volMl, quantity: qty, featureTags }, allItems);
+    let loc = LOCATIONS.find(l => l.id === bagInfo.locationId) || firstActiveLocation();
     if (bagInfo.needDecision) {
       const goNew = confirm(
-        `⚠ 「${loc.name}」已達建議上限（${bagInfo.usedBags}/${bagInfo.maxBags} 袋，65% 空間），且現有袋都塞不下這件。\n\n` +
+        `\u26a0 「${loc.name}」(含備位) 已達建議上限，且現有袋都塞不下這件。\n\n` +
         `「確定」＝硬開新袋 #${bagInfo.bagNum}（超出建議但繼續用）\n` +
-        `「取消」＝封存此位置（之後只能查詢、不再新建，請改放其他位置）`
+        `「取消」＝封存此位置（之後只能查詢、不再新建）`
       );
       if (!goNew) {
         setLocationArchived(loc.id, true);
-        // 改分配到其他未封存位置
-        const alt = firstActiveLocation();
-        if (alt && alt.id !== loc.id) { loc = alt; bagInfo = assignBag(alt.id, featureTags, volMl * qty, allItems); }
-        else { showToast('⚠ 已無可用位置，請先到「收納位置」新增或解除封存', 'error'); }
+        bagInfo = assignBag({ category_path: item.category_path, item_core_type: item.item_core_type, estimateVolumeMl: volMl, quantity: qty, featureTags }, allItems);
+        loc = LOCATIONS.find(l => l.id === bagInfo.locationId) || firstActiveLocation();
+        if (!loc) showToast('⚠ 已無可用位置，請先到「收納位置」新增或解除封存', 'error');
       }
     }
   }
@@ -903,7 +975,7 @@ function adjustQty(delta) {
   pendingItem.quantity = Math.max(1, (pendingItem.quantity||1) + delta); document.getElementById('qty-display').textContent = pendingItem.quantity;
   const totalVol = pendingItem.estimateVolumeMl * pendingItem.quantity; document.getElementById('qty-total-vol').textContent = '= ' + (totalVol >= 1000 ? (totalVol/1000).toFixed(1)+'L' : totalVol+'ml');
   loadItems().then(allItems => {
-    const bagInfo = assignBag(pendingItem.locationId, pendingItem.featureTags || [], totalVol, allItems);
+    const bagInfo = assignBag(pendingItem, allItems);
     pendingItem.locationId = bagInfo.locationId; pendingItem.locationName = bagInfo.locationName; pendingItem.bagNum = bagInfo.bagNum;
     document.getElementById('result-zonename').textContent = bagInfo.locationName; document.getElementById('result-bag').textContent = '#' + bagInfo.bagNum;
   });
@@ -926,7 +998,7 @@ function applySizeOverride(volMl, viaDirect, dims) {
   if (tag) { tag.textContent = '已調整'; tag.style.color = 'var(--green)'; }
   // 體積變了 → 重新分配袋號（袋滿開新袋，與 adjustQty 同邏輯）
   loadItems().then(function(allItems){
-    const bagInfo = assignBag(pendingItem.locationId, pendingItem.featureTags || [], totalVol, allItems);
+    const bagInfo = assignBag(pendingItem, allItems);
     pendingItem.locationId = bagInfo.locationId; pendingItem.locationName = bagInfo.locationName; pendingItem.bagNum = bagInfo.bagNum;
     document.getElementById('result-zonename').textContent = bagInfo.locationName; document.getElementById('result-bag').textContent = '#' + bagInfo.bagNum;
   });
@@ -970,7 +1042,7 @@ async function confirmItem() {
   if (!pendingItem) return;
   showScreen('s-processing'); setProcessingMsg('儲存中...');
   try {
-    const now = Date.now(), item = { name: pendingItem.name, name_en: pendingItem.name_en || '', locationId: pendingItem.locationId, locationName: pendingItem.locationName, bagNum: pendingItem.bagNum, estimateVolumeMl:pendingItem.estimateVolumeMl || 100, manualVolume: !!pendingItem.manualVolume, dimL: pendingItem.dimL || 0, dimW: pendingItem.dimW || 0, dimH: pendingItem.dimH || 0, quantity: pendingItem.quantity || 1, featureTags: pendingItem.featureTags || [], description: pendingItem.description || '', keywords: pendingItem.keywords || [], imageData: pendingItem._useThumb || pendingItem.imageData || '', updatedAt: now };
+    const now = Date.now(), item = { name: pendingItem.name, name_en: pendingItem.name_en || '', locationId: pendingItem.locationId, locationName: pendingItem.locationName, bagNum: pendingItem.bagNum, estimateVolumeMl:pendingItem.estimateVolumeMl || 100, manualVolume: !!pendingItem.manualVolume, dimL: pendingItem.dimL || 0, dimW: pendingItem.dimW || 0, dimH: pendingItem.dimH || 0, quantity: pendingItem.quantity || 1, featureTags: pendingItem.featureTags || [], category_path: pendingItem.category_path || [], item_core_type: pendingItem.item_core_type || '', description: pendingItem.description || '', keywords: pendingItem.keywords || [], imageData: pendingItem._useThumb || pendingItem.imageData || '', updatedAt: now };
     if (pendingItem.isUpdate && pendingItem.matchedId) {
       item.id = pendingItem.matchedId; item.createdAt = pendingItem._matchRef?.createdAt || pendingItem.createdAt || now;
       if (pendingItem._matchRef?.imageData && !item.imageData) item.imageData = pendingItem._matchRef.imageData;
@@ -1445,6 +1517,110 @@ window.runStorageVisualMatch = function() {
 console.log('[v1.1] Visual match installed');
 
 // START
+// ── 第二階段：分類路由管理 UI ──
+function openRouting() { showScreen('s-routing'); renderRoutingList(); }
+function _escAttr(s) { return String(s).replace(/'/g, "\\'"); }
+function _locOptions(selectedId) {
+  return LOCATIONS.filter(l => !l.archived)
+    .map(l => `<option value="${l.id}"${l.id === selectedId ? ' selected' : ''}>${l.name}</option>`)
+    .join('');
+}
+function renderRoutingList() {
+  const c = document.getElementById('routing-list-container');
+  if (!c) return;
+  c.innerHTML = '';
+  for (const [category, config] of Object.entries(CATEGORY_ROUTING)) {
+    const isDefault = category === '其他生活雜物';
+    const cat = _escAttr(category);
+    const fbHTML = (config.fallbackLocations || []).map((fbId, idx) => `
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <select onchange="updateRoutingFallback('${cat}',${idx},this.value)" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:8px;font-size:14px">
+          <option value="">— 移除此備位 —</option>
+          ${_locOptions(fbId)}
+        </select>
+      </div>`).join('');
+    const card = document.createElement('div');
+    card.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px';
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <span style="font-weight:700;color:${isDefault ? 'var(--muted)' : 'var(--text)'}">${category}${isDefault ? '（系統兜底）' : ''}</span>
+        ${isDefault ? '' : `<button class="btn-danger" style="padding:4px 10px" onclick="deleteCategoryRoute('${cat}')">刪除</button>`}
+      </div>
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:5px;font-family:var(--mono)">主位置</label>
+      <select onchange="updateRoutingPrimary('${cat}',this.value)" style="width:100%;background:var(--surface);border:1px solid var(--accent);color:var(--text);padding:9px;border-radius:8px;font-size:14px;font-weight:700;margin-bottom:12px">
+        ${_locOptions(config.primaryLocation)}
+      </select>
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:5px;font-family:var(--mono)">備用位置（溢位順序）</label>
+      <div>${fbHTML || '<div style="font-size:12px;color:var(--dim)">（無備位，主位滿了會提示）</div>'}</div>
+      <button class="btn-sm" style="margin-top:8px" onclick="addRoutingFallback('${cat}')">+ 新增備位</button>
+      <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px">
+        <button class="btn-ghost" style="margin:0" onclick="migrateLegacyItems('${cat}')">🔄 將「${category}」既有物品重新路由</button>
+      </div>`;
+    c.appendChild(card);
+  }
+}
+function updateRoutingPrimary(category, newLocationId) {
+  if (!CATEGORY_ROUTING[category]) return;
+  CATEGORY_ROUTING[category].primaryLocation = newLocationId;
+  saveCategoryRouting();
+}
+function updateRoutingFallback(category, index, newLocationId) {
+  const cfg = CATEGORY_ROUTING[category]; if (!cfg) return;
+  if (newLocationId) cfg.fallbackLocations[index] = newLocationId;
+  else cfg.fallbackLocations.splice(index, 1);
+  saveCategoryRouting();
+  renderRoutingList();
+}
+function addRoutingFallback(category) {
+  const cfg = CATEGORY_ROUTING[category]; if (!cfg) return;
+  const def = (LOCATIONS.find(l => !l.archived) || {}).id || '';
+  cfg.fallbackLocations.push(def);
+  saveCategoryRouting();
+  renderRoutingList();
+}
+function promptNewCategory() {
+  const v = prompt('輸入新的大類名稱（例如：美妝保養、汽車用品、寵物用品）：');
+  if (!v || !v.trim()) return;
+  const name = v.trim();
+  if (CATEGORY_ROUTING[name]) { alert('⚠ 此分類已存在'); return; }
+  const def = (LOCATIONS.find(l => !l.archived) || {}).id || '';
+  CATEGORY_ROUTING[name] = { primaryLocation: def, fallbackLocations: [] };
+  saveCategoryRouting();
+  renderRoutingList();
+}
+function deleteCategoryRoute(category) {
+  if (category === '其他生活雜物') { alert('兜底類別不可刪除'); return; }
+  if (!confirm(`確定刪除「${category}」？\n\n之後新辨識的這類物品會被歸入「其他生活雜物」。既有物品不會消失。`)) return;
+  delete CATEGORY_ROUTING[category];
+  saveCategoryRouting();
+  renderRoutingList();
+}
+async function migrateLegacyItems(category) {
+  const cfg = CATEGORY_ROUTING[category];
+  if (!cfg) return;
+  const allItems = await loadItems();
+  const allowed = [cfg.primaryLocation].concat(cfg.fallbackLocations || []);
+  const toMove = allItems.filter(i => categoryOf(i) === category && !allowed.includes(i.locationId));
+  if (!toMove.length) { alert(`✅ 沒有需要搬移的「${category}」物品。`); return; }
+  const primaryName = (LOCATIONS.find(l => l.id === cfg.primaryLocation) || {}).name || '主位置';
+  if (!confirm(`找到 ${toMove.length} 件「${category}」散落在其他位置。\n\n要重新計算收納袋、集中到「${primaryName}」及其備位嗎？\n（會更改這些物品的位置與袋號）`)) return;
+  let moved = 0;
+  for (const item of toMove) {
+    const info = assignBag(item, allItems);
+    if (item.locationId !== info.locationId || item.bagNum !== info.bagNum) {
+      item.locationId = info.locationId;
+      item.locationName = info.locationName;
+      item.bagNum = info.bagNum;
+      item.updatedAt = Date.now();
+      await updateItem(item);
+      moved++;
+    }
+  }
+  alert(`🎉 搬移完成，共重新集中 ${moved} 件物品。`);
+  refreshMain();
+  renderRoutingList();
+}
+
 init();
 </script>
 </body>
