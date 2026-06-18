@@ -481,16 +481,26 @@ async function loadLocationsFromCloud() {
   if (!db || cfg.localOnly) return;
   try {
     const snap = await db.collection(_locCol()).get();
-    if (snap.empty) { await syncAllLocationsCloud(); return; }   // 首次升級：把本機位置推上雲端
-    LOCATIONS = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    saveLocations();                                            // 鏡像回本機
+    const cloud = {}; snap.forEach(d => { cloud[d.id] = { id: d.id, ...d.data() }; });
+    const local = {}; LOCATIONS.forEach(l => { local[l.id] = l; });
+    const ids = new Set([...Object.keys(cloud), ...Object.keys(local)]);
+    const merged = [], toPush = [];
+    ids.forEach(id => {
+      const c = cloud[id], l = local[id];
+      if (c && l) { const cu = c.updatedAt || 0, lu = l.updatedAt || 0; merged.push(lu > cu ? l : c); if (lu > cu) toPush.push(l); }
+      else if (c) { merged.push(c); }
+      else { merged.push(l); toPush.push(l); }   // 本機獨有 → 保留並推上雲端，絕不丟失
+    });
+    LOCATIONS = merged;
+    saveLocations();
+    for (const l of toPush) { try { await db.collection(_locCol()).doc(l.id).set(l); } catch (e) {} }
   } catch (e) { console.warn('loc cloud load', e); }
 }
 
 function addLocation(name, bagSizeMl, hints, dims) {
   const id = 'loc_' + Date.now();
   dims = dims || {};
-  LOCATIONS.push({ id, name, bagSizeMl: Number(bagSizeMl), hints, dimL:Number(dims.l)||0, dimW:Number(dims.w)||0, dimH:Number(dims.h)||0 });
+  LOCATIONS.push({ id, name, bagSizeMl: Number(bagSizeMl), hints, dimL:Number(dims.l)||0, dimW:Number(dims.w)||0, dimH:Number(dims.h)||0, updatedAt: Date.now() });
   saveLocations();
   pushLocationCloud(LOCATIONS[LOCATIONS.length - 1]);
   return LOCATIONS[LOCATIONS.length - 1];
@@ -609,7 +619,7 @@ function getLocationPromptList() {
 // 封存位置：之後不再新建收納（AI 不建議、分配跳過），只能查詢；可解除
 function setLocationArchived(id, archived) {
   const loc = LOCATIONS.find(l => l.id === id); if (!loc) return;
-  loc.archived = !!archived; saveLocations(); pushLocationCloud(loc);
+  loc.archived = !!archived; loc.updatedAt = Date.now(); saveLocations(); pushLocationCloud(loc);
   showToast(archived ? ('🔒 已封存「'+loc.name+'」：只能查詢，不再新建') : ('🔓 已解除封存「'+loc.name+'」'));
 }
 // 取第一個未封存的位置（fallback 用）
@@ -1320,7 +1330,7 @@ async function doSaveLocation(id) {
   loc.dimL = parseFloat(document.getElementById('edit-dimL-' + id).value) || 0;
   loc.dimW = parseFloat(document.getElementById('edit-dimW-' + id).value) || 0;
   loc.dimH = parseFloat(document.getElementById('edit-dimH-' + id).value) || 0;
-  saveLocations(); pushLocationCloud(loc);
+  loc.updatedAt = Date.now(); saveLocations(); pushLocationCloud(loc);
   if (oldName !== newName) {
     const items = JSON.parse(localStorage.getItem(ITEMS_KEY) || '[]'); let updated = 0;
     items.forEach(item => { if (item.locationId === id) { item.locationName = newName; updated++; } });
