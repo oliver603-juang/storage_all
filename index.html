@@ -592,6 +592,81 @@ function setLocationArchived(id, archived) {
 // 取第一個未封存的位置（fallback 用）
 function firstActiveLocation() { return LOCATIONS.find(l => !l.archived) || LOCATIONS[0]; }
 
+// ── 智慧分類選擇器：類別未對應到實際收納位置時，彈出點選（不必打字）──
+function _catLocValid(cat) {
+  const cfg = CATEGORY_ROUTING[cat]; if (!cfg) return false;
+  const ids = [cfg.primaryLocation].concat(cfg.fallbackLocations || []);
+  return ids.some(id => LOCATIONS.find(l => l.id === id && !l.archived));
+}
+function isRoutable(item) {
+  const c = item && item.category_path && item.category_path[0];
+  return !!c && !!CATEGORY_ROUTING[c] && _catLocValid(c);
+}
+function ensureCategoryRouted(item) {
+  return new Promise(res => { if (isRoutable(item)) return res(); openCategoryPicker(item, res); });
+}
+function openCategoryPicker(item, done) {
+  const aiCat = (item.category_path && item.category_path[0]) || item.item_core_type || '未分類';
+  const itemName = item.name || item.item_core_type || '此物品';
+  let ov = document.getElementById('catpick-overlay'); if (ov) ov.remove();
+  ov = document.createElement('div'); ov.id = 'catpick-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center';
+  const sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--card,#1c1a17);width:100%;max-width:520px;border-radius:16px 16px 0 0;padding:18px 16px 24px;max-height:82vh;overflow:auto;box-shadow:0 -8px 30px rgba(0,0,0,.45)';
+  ov.appendChild(sheet); document.body.appendChild(ov);
+  const finish = () => { ov.remove(); done(); };
+
+  const renderCats = () => {
+    sheet.innerHTML = `<div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:4px">「${itemName}」要歸到哪個大類？</div><div style="font-size:12px;color:var(--muted);margin-bottom:14px">AI 判斷為「${aiCat}」，但它還沒對應到你的收納位置。點一個大類即可，不必打字。</div><div id="catpick-cats" style="display:flex;flex-direction:column;gap:8px"></div>`;
+    const box = sheet.querySelector('#catpick-cats');
+    const aiBtn = document.createElement('button');
+    aiBtn.className = 'btn-primary'; aiBtn.style.cssText = 'margin:0;text-align:left';
+    aiBtn.textContent = `＋ 新增大類「${aiCat}」`;
+    aiBtn.onclick = () => pickCategory(aiCat, true);
+    box.appendChild(aiBtn);
+    Object.keys(CATEGORY_ROUTING).forEach(cat => {
+      if (cat === aiCat) return;
+      const b = document.createElement('button');
+      b.className = 'btn-sm'; b.style.cssText = 'margin:0;text-align:left;padding:10px 12px';
+      b.textContent = cat;
+      b.onclick = () => pickCategory(cat, false);
+      box.appendChild(b);
+    });
+    const cancel = document.createElement('button');
+    cancel.className = 'btn-ghost'; cancel.style.cssText = 'margin-top:6px';
+    cancel.textContent = '略過（沿用 AI 判斷）';
+    cancel.onclick = finish;
+    box.appendChild(cancel);
+  };
+
+  const pickCategory = (cat, isNew) => {
+    item.category_path = [cat].concat((item.category_path && item.category_path.slice(1)) || []);
+    if (isNew && !CATEGORY_ROUTING[cat]) CATEGORY_ROUTING[cat] = { primaryLocation: '', fallbackLocations: [] };
+    if (_catLocValid(cat)) { saveCategoryRouting(); finish(); }
+    else renderLocs(cat);
+  };
+
+  const renderLocs = (cat) => {
+    sheet.innerHTML = `<div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:4px">「${cat}」要放哪個收納位置？</div><div style="font-size:12px;color:var(--muted);margin-bottom:14px">點一個位置即設為此大類的主位置，之後同類都會放這裡（可到 🗂 分類路由 調整）。</div><div id="catpick-locs" style="display:flex;flex-direction:column;gap:8px"></div>`;
+    const box = sheet.querySelector('#catpick-locs');
+    const locs = [...LOCATIONS].filter(l => !l.archived).sort((a, b) => (a.name || '').localeCompare((b.name || ''), 'zh-Hant'));
+    locs.forEach(l => {
+      const b = document.createElement('button');
+      b.className = 'btn-sm'; b.style.cssText = 'margin:0;text-align:left;padding:10px 12px';
+      b.textContent = `📍 ${l.name}`;
+      b.onclick = () => { CATEGORY_ROUTING[cat].primaryLocation = l.id; saveCategoryRouting(); showToast(`已設定：${cat} → ${l.name}`); finish(); };
+      box.appendChild(b);
+    });
+    const back = document.createElement('button');
+    back.className = 'btn-ghost'; back.style.cssText = 'margin-top:6px';
+    back.textContent = '← 返回選大類';
+    back.onclick = renderCats;
+    box.appendChild(back);
+  };
+
+  renderCats();
+}
+
 let cfg = {}; let db = null; let pendingItem = null; let currentImageData = null;
 
 // ══════════════════════════════════════════════
@@ -870,6 +945,7 @@ async function processIdentifiedItem(item) {
   if (match) {
     bagInfo = { locationId: match.locationId, locationName: match.locationName, bagNum: match.bagNum };
   } else {
+    await ensureCategoryRouted(item);
     bagInfo = assignBag({ category_path: item.category_path, item_core_type: item.item_core_type, estimateVolumeMl: volMl, quantity: qty, featureTags }, allItems);
     let loc = LOCATIONS.find(l => l.id === bagInfo.locationId) || firstActiveLocation();
     if (bagInfo.needDecision) {
