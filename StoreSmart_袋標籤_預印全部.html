@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>StoreSmart 收納袋標籤（預印全部袋號）</title>
+<title>StoreSmart 收納袋標籤（可選位置／指定袋號）</title>
 <style>
   :root { --accent:#F5A623; --bg:#1a1a1a; --card:#242424; --text:#e8e4dc; --muted:#9c9a92; --green:#4CAF50; }
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -21,18 +21,23 @@
   .btn-save { background:#2c6e49; color:#fff; } .btn-save:hover { background:#35895a; }
   .status { font-size:11px; color:var(--green); } .status.err { color:#f44; }
   .spacer { flex:1; }
-  .config { max-width:920px; margin:18px auto; background:var(--card); border-radius:10px; padding:16px 18px; }
+  .config { max-width:1000px; margin:18px auto; background:var(--card); border-radius:10px; padding:16px 18px; }
   .config h2 { font-size:14px; color:var(--accent); margin-bottom:6px; }
   .config p { font-size:12px; color:var(--muted); margin-bottom:12px; line-height:1.6; }
+  .selbar { display:flex; gap:8px; margin-bottom:8px; }
+  .selbar button { background:none; border:1px solid #555; color:var(--text); font-size:11px; padding:4px 10px; border-radius:5px; cursor:pointer; }
   table.loc { width:100%; border-collapse:collapse; }
   table.loc th, table.loc td { text-align:left; padding:6px 6px; border-bottom:1px solid #383838; font-size:13px; }
   table.loc th { color:var(--muted); font-weight:600; font-size:11px; }
   table.loc input[type=text] { width:100%; background:var(--bg); border:1px solid #444; color:var(--text); padding:6px 8px; border-radius:5px; font-size:13px; }
-  table.loc input.dim, table.loc input.cap, table.loc input.cnt { background:var(--bg); border:1px solid #444; color:var(--text); padding:6px 4px; border-radius:5px; text-align:center; font-size:13px; }
-  table.loc input.dim { width:52px; } table.loc input.cap { width:64px; } table.loc input.cnt { width:60px; }
-  table.loc .src { font-size:10px; color:var(--muted); }
+  table.loc input.dim, table.loc input.cap { background:var(--bg); border:1px solid #444; color:var(--text); padding:6px 4px; border-radius:5px; text-align:center; font-size:13px; }
+  table.loc input.dim { width:50px; } table.loc input.cap { width:62px; }
+  table.loc input.bags { width:130px; background:var(--bg); border:1px solid #444; color:var(--text); padding:6px 8px; border-radius:5px; font-size:13px; }
+  table.loc input[type=checkbox] { accent-color:var(--accent); width:17px; height:17px; }
+  table.loc .mx { font-weight:700; color:var(--accent); }
   table.loc .rm { background:none; border:none; color:#d9534f; cursor:pointer; font-weight:700; }
-  table.loc .x { color:var(--muted); font-size:11px; padding:0 1px; }
+  table.loc .x { color:var(--muted); font-size:11px; }
+  tr.off { opacity:.4; }
   .config-actions { display:flex; gap:10px; margin-top:14px; align-items:center; flex-wrap:wrap; }
 
   .page { width:210mm; height:297mm; background:white; margin:20px auto; box-shadow:0 4px 20px rgba(0,0,0,0.5); position:relative; overflow:hidden; }
@@ -58,7 +63,7 @@
 <body>
 
 <div class="control-panel no-print">
-  <h1>📦 收納袋標籤 · 預印全部袋號<span>L1437 · 5×19 = 95 格/頁 · 位置 #1～#N</span></h1>
+  <h1>📦 收納袋標籤<span>L1437 · 5×19=95 格/頁 · 可選位置／指定袋號</span></h1>
   <div class="ctrl-group"><label>上邊距</label><input type="number" id="margin-top" value="15.5" step="0.5" onchange="updateMargins()"><label>mm</label></div>
   <div class="ctrl-group"><label>左邊距</label><input type="number" id="margin-left" value="12.5" step="0.5" onchange="updateMargins()"><label>mm</label></div>
   <div class="ctrl-group"><input type="checkbox" id="show-borders" checked onchange="toggleBorders()"><label for="show-borders">預覽框線</label></div>
@@ -68,15 +73,16 @@
 </div>
 
 <div class="config no-print" id="config">
-  <h2>① 填尺寸與容量 → 自動算袋數（可存回雲端 = 路徑 A）</h2>
-  <p>輸入每個位置的「長×寬×高 (cm)」與「袋容量 (ml)」，右側「要印袋數」會用 <strong>長×寬×高×65%÷容量</strong> 自動算出。尺寸沒填的位置用下方預設袋數；袋數也可手動覆寫，設 <strong>0</strong> 代表不印。<br>按 <strong>💾 儲存尺寸到雲端</strong> 會寫回 Firebase，App 與其他裝置重開即同步（不必回 App 一個個填）。</p>
+  <h2>① 勾選要印的位置，並指定袋號</h2>
+  <p>勾選框決定這個位置印不印。「要印袋號」可填：範圍 <strong>11:15</strong>、單獨號碼 <strong>4 5 6</strong>、或混合 <strong>1:15 18 20</strong>；<strong>留空＝印全部</strong>（#1～最大袋數）。尺寸／容量改了會即時重算最大袋數，按 <strong>💾 儲存尺寸到雲端</strong> 可同步回 App。</p>
+  <div class="selbar"><button onclick="selectAll(true)">全選</button><button onclick="selectAll(false)">全不選</button></div>
   <table class="loc">
-    <thead><tr><th style="width:30%">收納位置</th><th>長</th><th>寬</th><th>高</th><th>袋容量ml</th><th>要印袋數</th><th>來源</th><th></th></tr></thead>
+    <thead><tr><th style="width:34px">印</th><th style="width:24%">收納位置</th><th>長</th><th>寬</th><th>高</th><th>容量ml</th><th>最大袋數</th><th>要印袋號（留空=全部）</th><th></th></tr></thead>
     <tbody id="loc-rows"></tbody>
   </table>
   <div class="config-actions">
     <button class="btn btn-dark" onclick="addRow()">＋ 新增位置</button>
-    <div class="ctrl-group"><label>尺寸未填時預設印</label><input type="number" id="default-count" value="10" min="0" onchange="applyDefault()"><label>袋</label></div>
+    <div class="ctrl-group"><label>尺寸未填時每位置預設</label><input type="number" id="default-count" value="10" min="0"><label>袋</label></div>
     <div class="spacer"></div>
     <button class="btn btn-save" onclick="saveDimsToCloud()">💾 儲存尺寸到雲端</button>
     <button class="btn btn-primary" onclick="generate()">② 產生標籤</button>
@@ -91,41 +97,38 @@ import { getFirestore, collection, getDocs, doc, setDoc } from "https://www.gsta
 
 const FB_CONFIG = { apiKey: "AIzaSyDZltB8OQti4ZPkME-K95HXZL51oByXE10", projectId: "storesmart-7ae65" };
 const FILL_RATE = 0.65;
-const DEFAULT_BAG_ML = 2000;   // 袋容量統一預設 2000ml
+const DEFAULT_BAG_ML = 2000;
 
 function calcMaxBags(r) {
   const l = +r.dimL || 0, w = +r.dimW || 0, h = +r.dimH || 0, bag = +r.bagSizeMl || 0;
   if (l <= 0 || w <= 0 || h <= 0 || bag <= 0) return null;
   return Math.floor(l * w * h * FILL_RATE / bag);
 }
+// 解析袋號字串："11:15"、"4 5 6"、"1:15 18 20"、逗號或空白皆可
+function parseBags(str) {
+  const out = new Set();
+  (str || '').split(/[\s,]+/).filter(Boolean).forEach(tok => {
+    const m = tok.match(/^(\d+)\s*[:\-~]\s*(\d+)$/);
+    if (m) { let a = +m[1], b = +m[2]; if (a > b) { const t = a; a = b; b = t; } for (let k = a; k <= b; k++) out.add(k); }
+    else if (/^\d+$/.test(tok)) out.add(+tok);
+  });
+  return [...out].filter(n => n > 0).sort((x, y) => x - y);
+}
 
-// rows: [{ id, name, dimL, dimW, dimH, bagSizeMl, count, source, usedBags }]
-let rows = [];
+let rows = [];   // { id, name, dimL, dimW, dimH, bagSizeMl, usedBags, include, bagsSpec }
 let DB = null;
 const setStatus = (t, err) => { const s = document.getElementById('status'); s.className = 'status' + (err ? ' err' : ''); s.textContent = t; };
 
 async function init() {
   const byName = {};
   try { DB = getFirestore(initializeApp(FB_CONFIG)); } catch (e) {}
-
-  // A：Firebase locations（主要，跨裝置）
   if (DB) {
     try {
       const lsnap = await getDocs(collection(DB, 'locations'));
-      lsnap.forEach(d => {
-        const l = d.data(); if (!l.name) return;
-        byName[l.name] = { id: d.id, name: l.name, dimL: +l.dimL || 0, dimW: +l.dimW || 0, dimH: +l.dimH || 0, bagSizeMl: +l.bagSizeMl || 0, archived: !!l.archived, usedBags: 0 };
-      });
+      lsnap.forEach(d => { const l = d.data(); if (!l.name) return; byName[l.name] = { id: d.id, name: l.name, dimL: +l.dimL || 0, dimW: +l.dimW || 0, dimH: +l.dimH || 0, bagSizeMl: +l.bagSizeMl || 0, archived: !!l.archived, usedBags: 0 }; });
     } catch (e) {}
   }
-  // B：localStorage 補充
-  try {
-    const raw = localStorage.getItem('storesmart_locations');
-    if (raw) JSON.parse(raw).forEach(l => {
-      if (!byName[l.name]) byName[l.name] = { id: l.id, name: l.name, dimL: +l.dimL || 0, dimW: +l.dimW || 0, dimH: +l.dimH || 0, bagSizeMl: +l.bagSizeMl || 0, archived: !!l.archived, usedBags: 0 };
-    });
-  } catch (e) {}
-  // C：items 補「用過的位置 + 已用袋數」
+  try { const raw = localStorage.getItem('storesmart_locations'); if (raw) JSON.parse(raw).forEach(l => { if (!byName[l.name]) byName[l.name] = { id: l.id, name: l.name, dimL: +l.dimL || 0, dimW: +l.dimW || 0, dimH: +l.dimH || 0, bagSizeMl: +l.bagSizeMl || 0, archived: !!l.archived, usedBags: 0 }; }); } catch (e) {}
   if (DB) {
     try {
       const snap = await getDocs(collection(DB, 'items'));
@@ -134,54 +137,43 @@ async function init() {
       Object.keys(used).forEach(nm => { if (byName[nm]) byName[nm].usedBags = used[nm].size; });
       setStatus('✓ 已載入位置（Firebase locations + items）');
     } catch (e) { setStatus('Firebase 讀取略過（' + e.message + '）', false); }
-  } else { setStatus('無法連線 Firebase，僅用本機位置', true); }
+  } else { setStatus('無法連線 Firebase（請用網址/localhost 開啟，勿用 file://）', true); }
 
-  const def = +document.getElementById('default-count').value || 10;
   rows = Object.values(byName).filter(l => !l.archived).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'))
-    .map(l => {
-      const r = { id: l.id, name: l.name, dimL: l.dimL, dimW: l.dimW, dimH: l.dimH, bagSizeMl: l.bagSizeMl || DEFAULT_BAG_ML, usedBags: l.usedBags, count: 0, source: '' };
-      const mb = calcMaxBags(r);
-      if (mb != null) { r.count = mb; r.source = '容量估算'; }
-      else if (l.usedBags > 0) { r.count = l.usedBags; r.source = '目前已用'; }
-      else { r.count = def; r.source = '預設'; }
-      return r;
-    });
-  if (!rows.length) { rows.push({ id: null, name: '', dimL: 0, dimW: 0, dimH: 0, bagSizeMl: DEFAULT_BAG_ML, usedBags: 0, count: def, source: '手動' }); setStatus('找不到位置資料，請手動新增', true); }
+    .map(l => ({ id: l.id, name: l.name, dimL: l.dimL, dimW: l.dimW, dimH: l.dimH, bagSizeMl: l.bagSizeMl || DEFAULT_BAG_ML, usedBags: l.usedBags, include: true, bagsSpec: '' }));
+  if (!rows.length) { rows.push({ id: null, name: '', dimL: 0, dimW: 0, dimH: 0, bagSizeMl: DEFAULT_BAG_ML, usedBags: 0, include: true, bagsSpec: '' }); setStatus('找不到位置資料，請手動新增（或改用網址/localhost 開啟）', true); }
   window.rows = rows;
   renderRows();
 }
+
+function maxOrDefault(r) { const mb = calcMaxBags(r); return mb != null ? mb : (+document.getElementById('default-count').value || 10); }
 
 function renderRows() {
   const tb = document.getElementById('loc-rows');
   tb.innerHTML = '';
   rows.forEach((r, i) => {
+    const mb = calcMaxBags(r);
     const tr = document.createElement('tr');
+    if (!r.include) tr.className = 'off';
     tr.innerHTML = `
+      <td style="text-align:center"><input type="checkbox" ${r.include ? 'checked' : ''} onchange="rows[${i}].include=this.checked;this.closest('tr').className=this.checked?'':'off'"></td>
       <td><input type="text" value="${(r.name || '').replace(/"/g, '&quot;')}" oninput="rows[${i}].name=this.value"></td>
       <td><input type="number" class="dim" min="0" value="${r.dimL || ''}" oninput="rows[${i}].dimL=parseFloat(this.value)||0;recompute(${i})"></td>
       <td><input type="number" class="dim" min="0" value="${r.dimW || ''}" oninput="rows[${i}].dimW=parseFloat(this.value)||0;recompute(${i})"></td>
       <td><input type="number" class="dim" min="0" value="${r.dimH || ''}" oninput="rows[${i}].dimH=parseFloat(this.value)||0;recompute(${i})"></td>
       <td><input type="number" class="cap" min="0" value="${r.bagSizeMl || ''}" oninput="rows[${i}].bagSizeMl=parseFloat(this.value)||0;recompute(${i})"></td>
-      <td><input type="number" class="cnt" min="0" value="${r.count}" oninput="rows[${i}].count=parseInt(this.value)||0;rows[${i}].source='手動';setSrc(${i})"></td>
-      <td><span class="src">${r.source}</span></td>
+      <td><span class="mx">${mb != null ? mb : '—'}</span></td>
+      <td><input type="text" class="bags" placeholder="例 11:15 或 4 5 6" value="${(r.bagsSpec || '').replace(/"/g, '&quot;')}" oninput="rows[${i}].bagsSpec=this.value"></td>
       <td><button class="rm" onclick="removeRow(${i})">刪除</button></td>`;
     tb.appendChild(tr);
   });
 }
 
-window.recompute = (i) => {
-  const r = rows[i];
-  const mb = calcMaxBags(r);
-  if (mb != null) { r.count = mb; r.source = '容量估算'; }
-  const tr = document.querySelectorAll('#loc-rows tr')[i];
-  if (tr) { tr.querySelector('.cnt').value = r.count; tr.querySelector('.src').textContent = r.source; }
-};
-window.setSrc = (i) => { const tr = document.querySelectorAll('#loc-rows tr')[i]; if (tr) tr.querySelector('.src').textContent = rows[i].source; };
-
+window.recompute = (i) => { const tr = document.querySelectorAll('#loc-rows tr')[i]; if (tr) { const mb = calcMaxBags(rows[i]); tr.querySelector('.mx').textContent = mb != null ? mb : '—'; } };
+window.selectAll = (v) => { rows.forEach(r => r.include = v); renderRows(); };
 window.rows = rows;
-window.addRow = () => { rows.push({ id: null, name: '', dimL: 0, dimW: 0, dimH: 0, bagSizeMl: DEFAULT_BAG_ML, usedBags: 0, count: +document.getElementById('default-count').value || 10, source: '手動' }); window.rows = rows; renderRows(); };
+window.addRow = () => { rows.push({ id: null, name: '', dimL: 0, dimW: 0, dimH: 0, bagSizeMl: DEFAULT_BAG_ML, usedBags: 0, include: true, bagsSpec: '' }); window.rows = rows; renderRows(); };
 window.removeRow = (i) => { rows.splice(i, 1); window.rows = rows; renderRows(); };
-window.applyDefault = () => { const def = +document.getElementById('default-count').value || 10; rows.forEach(r => { if (r.source === '預設' || r.source === '手動') { if (calcMaxBags(r) == null) { r.count = def; } } }); renderRows(); };
 
 window.saveDimsToCloud = async () => {
   if (!DB) { setStatus('未連線 Firebase，無法儲存', true); return; }
@@ -189,25 +181,24 @@ window.saveDimsToCloud = async () => {
   for (const r of rows) {
     const name = (r.name || '').trim(); if (!name) continue;
     const id = r.id || ('loc_' + Date.now() + Math.floor(Math.random() * 1000)); r.id = id;
-    try {
-      await setDoc(doc(DB, 'locations', id), {
-        id, name,
-        bagSizeMl: parseInt(r.bagSizeMl) || DEFAULT_BAG_ML,
-        dimL: parseFloat(r.dimL) || 0, dimW: parseFloat(r.dimW) || 0, dimH: parseFloat(r.dimH) || 0,
-        updatedAt: Date.now()
-      }, { merge: true });
-      ok++;
-    } catch (e) { fail++; }
+    try { await setDoc(doc(DB, 'locations', id), { id, name, bagSizeMl: parseInt(r.bagSizeMl) || DEFAULT_BAG_ML, dimL: parseFloat(r.dimL) || 0, dimW: parseFloat(r.dimW) || 0, dimH: parseFloat(r.dimH) || 0, updatedAt: Date.now() }, { merge: true }); ok++; }
+    catch (e) { fail++; }
   }
-  setStatus('✓ 已儲存 ' + ok + ' 筆尺寸到雲端' + (fail ? '（' + fail + ' 筆失敗）' : '') + '，App 重開即同步', fail > 0);
+  setStatus('✓ 已儲存 ' + ok + ' 筆到雲端' + (fail ? '（' + fail + ' 失敗）' : '') + '，App 重開即同步', fail > 0);
 };
 
 function digitClass(n) { const L = String(n).length; return L >= 3 ? 'd3' : L === 2 ? 'd2' : ''; }
 
 window.generate = () => {
   const labels = [];
-  rows.forEach(r => { const name = (r.name || '').trim(); const c = parseInt(r.count) || 0; if (!name || c <= 0) return; for (let k = 1; k <= c; k++) labels.push({ name, bag: k }); });
-  if (!labels.length) { setStatus('沒有可產生的標籤（請填位置名稱與袋數）', true); return; }
+  rows.forEach(r => {
+    if (!r.include) return;
+    const name = (r.name || '').trim(); if (!name) return;
+    const spec = (r.bagsSpec || '').trim();
+    const bags = spec ? parseBags(spec) : Array.from({ length: maxOrDefault(r) }, (_, k) => k + 1);
+    bags.forEach(b => labels.push({ name, bag: b }));
+  });
+  if (!labels.length) { setStatus('沒有可產生的標籤（請勾選位置並確認袋號）', true); return; }
   const container = document.getElementById('pages-container'); container.innerHTML = '';
   const perPage = 95, totalPages = Math.ceil(labels.length / perPage);
   for (let p = 0; p < totalPages; p++) {
