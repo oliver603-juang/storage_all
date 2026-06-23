@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StoreSmart 收納袋標籤（預印全部袋號）</title>
+<style>
+  :root { --accent:#F5A623; --bg:#1a1a1a; --card:#242424; --text:#e8e4dc; --muted:#9c9a92; --green:#4CAF50; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI', system-ui, sans-serif; }
+  .control-panel { background:var(--card); padding:14px 20px; border-bottom:2px solid var(--accent); position:sticky; top:0; z-index:50; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .control-panel h1 { font-size:16px; font-weight:700; color:var(--accent); white-space:nowrap; }
+  .control-panel h1 span { font-size:11px; color:var(--muted); font-weight:400; display:block; }
+  .ctrl-group { display:flex; align-items:center; gap:8px; background:rgba(255,255,255,0.05); padding:6px 12px; border-radius:8px; }
+  .ctrl-group label { font-size:11px; color:var(--muted); }
+  .ctrl-group input[type=number] { width:56px; background:var(--bg); border:1px solid #444; color:var(--text); padding:4px 6px; border-radius:4px; text-align:center; font-size:12px; }
+  .ctrl-group input[type=checkbox] { accent-color:var(--accent); }
+  .btn { padding:8px 16px; border:none; border-radius:6px; font-size:13px; font-weight:700; cursor:pointer; transition:.15s; }
+  .btn-primary { background:var(--accent); color:#111; } .btn-primary:hover { background:#e6991a; }
+  .btn-dark { background:#333; color:#fff; border:1px solid #555; } .btn-dark:hover { background:#444; }
+  .btn-save { background:#2c6e49; color:#fff; } .btn-save:hover { background:#35895a; }
+  .status { font-size:11px; color:var(--green); } .status.err { color:#f44; }
+  .spacer { flex:1; }
+  .config { max-width:920px; margin:18px auto; background:var(--card); border-radius:10px; padding:16px 18px; }
+  .config h2 { font-size:14px; color:var(--accent); margin-bottom:6px; }
+  .config p { font-size:12px; color:var(--muted); margin-bottom:12px; line-height:1.6; }
+  table.loc { width:100%; border-collapse:collapse; }
+  table.loc th, table.loc td { text-align:left; padding:6px 6px; border-bottom:1px solid #383838; font-size:13px; }
+  table.loc th { color:var(--muted); font-weight:600; font-size:11px; }
+  table.loc input[type=text] { width:100%; background:var(--bg); border:1px solid #444; color:var(--text); padding:6px 8px; border-radius:5px; font-size:13px; }
+  table.loc input.dim, table.loc input.cap, table.loc input.cnt { background:var(--bg); border:1px solid #444; color:var(--text); padding:6px 4px; border-radius:5px; text-align:center; font-size:13px; }
+  table.loc input.dim { width:52px; } table.loc input.cap { width:64px; } table.loc input.cnt { width:60px; }
+  table.loc .src { font-size:10px; color:var(--muted); }
+  table.loc .rm { background:none; border:none; color:#d9534f; cursor:pointer; font-weight:700; }
+  table.loc .x { color:var(--muted); font-size:11px; padding:0 1px; }
+  .config-actions { display:flex; gap:10px; margin-top:14px; align-items:center; flex-wrap:wrap; }
+
+  .page { width:210mm; height:297mm; background:white; margin:20px auto; box-shadow:0 4px 20px rgba(0,0,0,0.5); position:relative; overflow:hidden; }
+  .labels-grid { display:grid; grid-template-columns:repeat(5, 37mm); grid-template-rows:repeat(19, 14mm); }
+  .label-cell { width:37mm; height:14mm; border:1px dashed #ddd; display:flex; align-items:center; overflow:hidden; page-break-inside:avoid; background:#fafaf5; }
+  .label-id { flex-shrink:0; width:13mm; height:13.2mm; display:flex; flex-direction:column; justify-content:center; align-items:center; font-weight:900; color:#000; line-height:1; border-right:0.5px solid var(--accent); font-family:'Arial Black','Impact',sans-serif; }
+  .label-id .hash { font-size:7pt; font-weight:700; color:#888; }
+  .label-id .num { font-size:30pt; letter-spacing:-0.5pt; }
+  .label-id .num.d2 { font-size:24pt; } .label-id .num.d3 { font-size:17pt; }
+  .label-body { flex:1; display:flex; align-items:center; justify-content:center; height:100%; padding:0.4mm 1mm; }
+  .bag-loc { font-size:9.5pt; font-weight:700; color:#000; line-height:1.1; text-align:center; max-height:13mm; overflow:hidden; }
+
+  @media print {
+    body { background:white; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    .control-panel, .config, .no-print { display:none !important; }
+    .page { box-shadow:none !important; margin:0 !important; border:none !important; page-break-after:always; }
+    @page { size:A4; margin:0; }
+    .label-cell { border:none !important; }
+    .label-id { border-right:0.3px solid #ccc !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="control-panel no-print">
+  <h1>📦 收納袋標籤 · 預印全部袋號<span>L1437 · 5×19 = 95 格/頁 · 位置 #1～#N</span></h1>
+  <div class="ctrl-group"><label>上邊距</label><input type="number" id="margin-top" value="15.5" step="0.5" onchange="updateMargins()"><label>mm</label></div>
+  <div class="ctrl-group"><label>左邊距</label><input type="number" id="margin-left" value="12.5" step="0.5" onchange="updateMargins()"><label>mm</label></div>
+  <div class="ctrl-group"><input type="checkbox" id="show-borders" checked onchange="toggleBorders()"><label for="show-borders">預覽框線</label></div>
+  <div class="spacer"></div>
+  <span id="status" class="status">讀取位置中...</span>
+  <button class="btn btn-dark" onclick="window.print()">🖨 列印</button>
+</div>
+
+<div class="config no-print" id="config">
+  <h2>① 填尺寸與容量 → 自動算袋數（可存回雲端 = 路徑 A）</h2>
+  <p>輸入每個位置的「長×寬×高 (cm)」與「袋容量 (ml)」，右側「要印袋數」會用 <strong>長×寬×高×65%÷容量</strong> 自動算出。尺寸沒填的位置用下方預設袋數；袋數也可手動覆寫，設 <strong>0</strong> 代表不印。<br>按 <strong>💾 儲存尺寸到雲端</strong> 會寫回 Firebase，App 與其他裝置重開即同步（不必回 App 一個個填）。</p>
+  <table class="loc">
+    <thead><tr><th style="width:30%">收納位置</th><th>長</th><th>寬</th><th>高</th><th>袋容量ml</th><th>要印袋數</th><th>來源</th><th></th></tr></thead>
+    <tbody id="loc-rows"></tbody>
+  </table>
+  <div class="config-actions">
+    <button class="btn btn-dark" onclick="addRow()">＋ 新增位置</button>
+    <div class="ctrl-group"><label>尺寸未填時預設印</label><input type="number" id="default-count" value="10" min="0" onchange="applyDefault()"><label>袋</label></div>
+    <div class="spacer"></div>
+    <button class="btn btn-save" onclick="saveDimsToCloud()">💾 儲存尺寸到雲端</button>
+    <button class="btn btn-primary" onclick="generate()">② 產生標籤</button>
+  </div>
+</div>
+
+<div id="pages-container"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getFirestore, collection, getDocs, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+const FB_CONFIG = { apiKey: "AIzaSyDZltB8OQti4ZPkME-K95HXZL51oByXE10", projectId: "storesmart-7ae65" };
+const FILL_RATE = 0.65;
+const DEFAULT_BAG_ML = 2000;   // 袋容量統一預設 2000ml
+
+function calcMaxBags(r) {
+  const l = +r.dimL || 0, w = +r.dimW || 0, h = +r.dimH || 0, bag = +r.bagSizeMl || 0;
+  if (l <= 0 || w <= 0 || h <= 0 || bag <= 0) return null;
+  return Math.floor(l * w * h * FILL_RATE / bag);
+}
+
+// rows: [{ id, name, dimL, dimW, dimH, bagSizeMl, count, source, usedBags }]
+let rows = [];
+let DB = null;
+const setStatus = (t, err) => { const s = document.getElementById('status'); s.className = 'status' + (err ? ' err' : ''); s.textContent = t; };
+
+async function init() {
+  const byName = {};
+  try { DB = getFirestore(initializeApp(FB_CONFIG)); } catch (e) {}
+
+  // A：Firebase locations（主要，跨裝置）
+  if (DB) {
+    try {
+      const lsnap = await getDocs(collection(DB, 'locations'));
+      lsnap.forEach(d => {
+        const l = d.data(); if (!l.name) return;
+        byName[l.name] = { id: d.id, name: l.name, dimL: +l.dimL || 0, dimW: +l.dimW || 0, dimH: +l.dimH || 0, bagSizeMl: +l.bagSizeMl || 0, archived: !!l.archived, usedBags: 0 };
+      });
+    } catch (e) {}
+  }
+  // B：localStorage 補充
+  try {
+    const raw = localStorage.getItem('storesmart_locations');
+    if (raw) JSON.parse(raw).forEach(l => {
+      if (!byName[l.name]) byName[l.name] = { id: l.id, name: l.name, dimL: +l.dimL || 0, dimW: +l.dimW || 0, dimH: +l.dimH || 0, bagSizeMl: +l.bagSizeMl || 0, archived: !!l.archived, usedBags: 0 };
+    });
+  } catch (e) {}
+  // C：items 補「用過的位置 + 已用袋數」
+  if (DB) {
+    try {
+      const snap = await getDocs(collection(DB, 'items'));
+      const used = {};
+      snap.forEach(d => { const x = d.data(); const nm = x.locationName; if (!nm) return; (used[nm] = used[nm] || new Set()).add(x.bagNum || 1); if (!byName[nm]) byName[nm] = { id: null, name: nm, dimL: 0, dimW: 0, dimH: 0, bagSizeMl: 0, archived: false, usedBags: 0 }; });
+      Object.keys(used).forEach(nm => { if (byName[nm]) byName[nm].usedBags = used[nm].size; });
+      setStatus('✓ 已載入位置（Firebase locations + items）');
+    } catch (e) { setStatus('Firebase 讀取略過（' + e.message + '）', false); }
+  } else { setStatus('無法連線 Firebase，僅用本機位置', true); }
+
+  const def = +document.getElementById('default-count').value || 10;
+  rows = Object.values(byName).filter(l => !l.archived).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'))
+    .map(l => {
+      const r = { id: l.id, name: l.name, dimL: l.dimL, dimW: l.dimW, dimH: l.dimH, bagSizeMl: l.bagSizeMl || DEFAULT_BAG_ML, usedBags: l.usedBags, count: 0, source: '' };
+      const mb = calcMaxBags(r);
+      if (mb != null) { r.count = mb; r.source = '容量估算'; }
+      else if (l.usedBags > 0) { r.count = l.usedBags; r.source = '目前已用'; }
+      else { r.count = def; r.source = '預設'; }
+      return r;
+    });
+  if (!rows.length) { rows.push({ id: null, name: '', dimL: 0, dimW: 0, dimH: 0, bagSizeMl: DEFAULT_BAG_ML, usedBags: 0, count: def, source: '手動' }); setStatus('找不到位置資料，請手動新增', true); }
+  window.rows = rows;
+  renderRows();
+}
+
+function renderRows() {
+  const tb = document.getElementById('loc-rows');
+  tb.innerHTML = '';
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" value="${(r.name || '').replace(/"/g, '&quot;')}" oninput="rows[${i}].name=this.value"></td>
+      <td><input type="number" class="dim" min="0" value="${r.dimL || ''}" oninput="rows[${i}].dimL=parseFloat(this.value)||0;recompute(${i})"></td>
+      <td><input type="number" class="dim" min="0" value="${r.dimW || ''}" oninput="rows[${i}].dimW=parseFloat(this.value)||0;recompute(${i})"></td>
+      <td><input type="number" class="dim" min="0" value="${r.dimH || ''}" oninput="rows[${i}].dimH=parseFloat(this.value)||0;recompute(${i})"></td>
+      <td><input type="number" class="cap" min="0" value="${r.bagSizeMl || ''}" oninput="rows[${i}].bagSizeMl=parseFloat(this.value)||0;recompute(${i})"></td>
+      <td><input type="number" class="cnt" min="0" value="${r.count}" oninput="rows[${i}].count=parseInt(this.value)||0;rows[${i}].source='手動';setSrc(${i})"></td>
+      <td><span class="src">${r.source}</span></td>
+      <td><button class="rm" onclick="removeRow(${i})">刪除</button></td>`;
+    tb.appendChild(tr);
+  });
+}
+
+window.recompute = (i) => {
+  const r = rows[i];
+  const mb = calcMaxBags(r);
+  if (mb != null) { r.count = mb; r.source = '容量估算'; }
+  const tr = document.querySelectorAll('#loc-rows tr')[i];
+  if (tr) { tr.querySelector('.cnt').value = r.count; tr.querySelector('.src').textContent = r.source; }
+};
+window.setSrc = (i) => { const tr = document.querySelectorAll('#loc-rows tr')[i]; if (tr) tr.querySelector('.src').textContent = rows[i].source; };
+
+window.rows = rows;
+window.addRow = () => { rows.push({ id: null, name: '', dimL: 0, dimW: 0, dimH: 0, bagSizeMl: DEFAULT_BAG_ML, usedBags: 0, count: +document.getElementById('default-count').value || 10, source: '手動' }); window.rows = rows; renderRows(); };
+window.removeRow = (i) => { rows.splice(i, 1); window.rows = rows; renderRows(); };
+window.applyDefault = () => { const def = +document.getElementById('default-count').value || 10; rows.forEach(r => { if (r.source === '預設' || r.source === '手動') { if (calcMaxBags(r) == null) { r.count = def; } } }); renderRows(); };
+
+window.saveDimsToCloud = async () => {
+  if (!DB) { setStatus('未連線 Firebase，無法儲存', true); return; }
+  let ok = 0, fail = 0;
+  for (const r of rows) {
+    const name = (r.name || '').trim(); if (!name) continue;
+    const id = r.id || ('loc_' + Date.now() + Math.floor(Math.random() * 1000)); r.id = id;
+    try {
+      await setDoc(doc(DB, 'locations', id), {
+        id, name,
+        bagSizeMl: parseInt(r.bagSizeMl) || DEFAULT_BAG_ML,
+        dimL: parseFloat(r.dimL) || 0, dimW: parseFloat(r.dimW) || 0, dimH: parseFloat(r.dimH) || 0,
+        updatedAt: Date.now()
+      }, { merge: true });
+      ok++;
+    } catch (e) { fail++; }
+  }
+  setStatus('✓ 已儲存 ' + ok + ' 筆尺寸到雲端' + (fail ? '（' + fail + ' 筆失敗）' : '') + '，App 重開即同步', fail > 0);
+};
+
+function digitClass(n) { const L = String(n).length; return L >= 3 ? 'd3' : L === 2 ? 'd2' : ''; }
+
+window.generate = () => {
+  const labels = [];
+  rows.forEach(r => { const name = (r.name || '').trim(); const c = parseInt(r.count) || 0; if (!name || c <= 0) return; for (let k = 1; k <= c; k++) labels.push({ name, bag: k }); });
+  if (!labels.length) { setStatus('沒有可產生的標籤（請填位置名稱與袋數）', true); return; }
+  const container = document.getElementById('pages-container'); container.innerHTML = '';
+  const perPage = 95, totalPages = Math.ceil(labels.length / perPage);
+  for (let p = 0; p < totalPages; p++) {
+    const page = document.createElement('div'); page.className = 'page';
+    const grid = document.createElement('div'); grid.className = 'labels-grid';
+    labels.slice(p * perPage, (p + 1) * perPage).forEach(L => {
+      const div = document.createElement('div'); div.className = 'label-cell';
+      div.innerHTML = `<div class="label-id"><span class="hash">袋</span><span class="num ${digitClass(L.bag)}">${L.bag}</span></div><div class="label-body"><div class="bag-loc">${L.name}</div></div>`;
+      grid.appendChild(div);
+    });
+    page.appendChild(grid); container.appendChild(page);
+  }
+  updateMargins();
+  setStatus('✓ ' + labels.length + ' 張標籤 · ' + totalPages + ' 頁（可列印）');
+  document.getElementById('pages-container').scrollIntoView({ behavior: 'smooth' });
+};
+
+window.updateMargins = () => { const top = document.getElementById('margin-top').value, left = document.getElementById('margin-left').value; document.querySelectorAll('.labels-grid').forEach(g => { g.style.paddingTop = top + 'mm'; g.style.paddingLeft = left + 'mm'; }); };
+window.toggleBorders = () => { const show = document.getElementById('show-borders').checked; let s = document.getElementById('dynamic-style'); if (!s) { s = document.createElement('style'); s.id = 'dynamic-style'; document.head.appendChild(s); } s.innerHTML = show ? '' : '.label-cell{border:none !important;} .label-id{border-right:none !important;}'; };
+
+init();
+</script>
+</body>
+</html>
